@@ -74,6 +74,19 @@
                 globToERE translation failures: ${builtins.toJSON r.translationFailures}
                 globToERE match failures: ${builtins.toJSON r.matchFailures}
               '';
+
+          # `glob` above only ever consults `builtins.match`. This one replays
+          # the same cases through `grep -qxE`, the engine `nd-status` actually
+          # uses, and fails if the two disagree. Same translator, both anchors.
+          glob-engines =
+            let
+              r = import ./tests/glob.nix { inherit (pkgs) lib; };
+              casesFile = pkgs.writeText "nd-glob-cases.tsv" r.engineCases;
+            in
+            pkgs.runCommand "nd-glob-engine-tests" { nativeBuildInputs = [ pkgs.gnugrep ]; } ''
+              bash ${./tests/glob-engines.sh} ${casesFile}
+              touch $out
+            '';
         }
       );
 
