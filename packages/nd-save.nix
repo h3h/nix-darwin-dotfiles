@@ -34,6 +34,46 @@ writeShellApplication {
     force=""
     expected_branch="''${ND_EXPECTED_BRANCH:-}"
 
+    # The application a destination belongs to, derived rather than looked up. A
+    # lookup table of application names goes stale the first time a file is
+    # added, and a wrong name in a commit subject is worse than a lower-case
+    # one — so this stays unprettified: "zed", not "Zed"; "wezterm", not
+    # "WezTerm".
+    app_of() {
+      local dest="$1" token
+      case "$dest" in
+        .config/*)
+          token="''${dest#.config/}"
+          token="''${token%%/*}"
+          ;;
+        *)
+          token="$(basename "$dest")"
+          ;;
+      esac
+      token="''${token#.}"
+      printf '%s' "''${token%%.*}"
+    }
+
+    derive_subject() {
+      local apps n list head tail
+      apps="$(printf '%s' "$copied" | sed '/^[[:space:]]*$/d' | while IFS= read -r d; do
+        app_of "$(printf '%s' "$d" | sed 's/^[[:space:]]*//')"
+        printf '\n'
+      done | sort -u)"
+
+      n="$(printf '%s\n' "$apps" | sed '/^$/d' | wc -l | tr -d ' ')"
+
+      if [ "$n" -le 1 ]; then
+        printf 'Save %s config written by the app' "$apps"
+        return 0
+      fi
+
+      list="$(printf '%s\n' "$apps" | sed '/^$/d' | paste -sd'|' - | sed 's/|/, /g')"
+      head="''${list%, *}"
+      tail="''${list##*, }"
+      printf 'Save config written by %s and %s' "$head" "$tail"
+    }
+
     while [ $# -gt 0 ]; do
       case "$1" in
         -m)
@@ -122,6 +162,17 @@ writeShellApplication {
     # as a matter of course, and the flake repo may be shared. Copying first and
     # refusing afterwards would leave the secret in the working tree for someone
     # to commit later by accident.
+    #
+    # The pattern list is deliberately not an entropy check, and this is a
+    # decision rather than an omission. Entropy scoring on application config
+    # false-positives on exactly what these files are full of — hashes, UUIDs,
+    # base64 icons, colour tables, minified snippets — and a scanner that cries
+    # wolf gets switched off within a week, at which point it is worse than no
+    # scanner because it is still trusted and now silent. This catches known key
+    # prefixes and suspiciously named assignments and nothing else; it is a
+    # backstop, not a guarantee. tests/run.sh pins three benign shapes that must
+    # never trip it, so a future entropy check cannot land without proving it
+    # does not break them.
     secrets=""
     while IFS="$tab" read -r _kind dest _repo_rel; do
       if [ -z "''${dest:-}" ]; then
@@ -268,7 +319,7 @@ writeShellApplication {
     fi
 
     if [ -z "$msg" ]; then
-      msg="Update config written by applications"
+      msg="$(derive_subject)"
     fi
 
     git -C "$flake" add -- "''${paths[@]}"

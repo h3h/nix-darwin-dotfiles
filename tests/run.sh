@@ -413,6 +413,65 @@ check "no constraint means no refusal" "committed" "$out"
 check "the branch is still printed" "branch 'topic'" "$out"
 rm -rf "$d"
 
+# Defect 4. Every commit said "Update config written by applications", so
+# `git log --oneline` told you nothing about which application rewrote what.
+d=$(new_fixture)
+drift "$d"
+run_save "$d" -y > /dev/null
+check "a single file names its app" "Save app config written by the app" "$(git -C "$d/repo" log -1 --format=%s)"
+rm -rf "$d"
+
+d=$(new_fixture)
+drift "$d"
+run_save "$d" -y -m "Explicit subject" > /dev/null
+check "-m still wins" "Explicit subject" "$(git -C "$d/repo" log -1 --format=%s)"
+rm -rf "$d"
+
+# Two apps. The fixture gets a second managed file under a different .config
+# component.
+d=$(new_fixture)
+mkdir -p "$d/home/.config/zed" "$d/repo/files/zed"
+printf 'a\n' > "$d/store-source-2"
+chmod 0444 "$d/store-source-2"
+install -m 0644 "$d/store-source-2" "$d/home/.config/zed/settings.json"
+install -m 0644 "$d/store-source-2" "$d/repo/files/zed/settings.json"
+printf '%s\t%s\t%s\n' "$d/store-source-2" ".config/zed/settings.json" "files/zed/settings.json" \
+  >> "$d/home/.local/state/nd/manifest"
+git -C "$d/repo" add -A; git -C "$d/repo" commit -qm "add zed"
+drift "$d"
+printf 'b\n' > "$d/home/.config/zed/settings.json"
+run_save "$d" -y > /dev/null
+check "two apps are both named" "Save config written by app and zed" "$(git -C "$d/repo" log -1 --format=%s)"
+rm -rf "$d"
+
+# A destination outside .config/ derives from the basename.
+d=$(new_fixture)
+printf 'x\n' > "$d/store-source-3"
+chmod 0444 "$d/store-source-3"
+install -m 0644 "$d/store-source-3" "$d/home/.wezterm.lua"
+install -m 0644 "$d/store-source-3" "$d/repo/files/wezterm.lua"
+printf '%s\t%s\t%s\n' "$d/store-source-3" ".wezterm.lua" "files/wezterm.lua" \
+  >> "$d/home/.local/state/nd/manifest"
+git -C "$d/repo" add -A; git -C "$d/repo" commit -qm "add wezterm"
+printf 'y\n' > "$d/home/.wezterm.lua"
+run_save "$d" -y > /dev/null
+check "a dotfile outside .config derives its name" "Save wezterm config written by the app" "$(git -C "$d/repo" log -1 --format=%s)"
+rm -rf "$d"
+
+# Defect 5 negatives. These must NOT trip the scan. They exist so a future
+# entropy check cannot land without proving it does not break them.
+for benign in \
+  '{"red": "#ff0044", "green": "#00ff88", "blue": "#0044ff"}' \
+  '{"id": "3f2504e0-4f89-11d3-9a0c-0305e82c3301"}' \
+  '{"icon": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="}'; do
+  d=$(new_fixture)
+  printf '%s\n' "$benign" > "$d/home/.config/app/config.toml"
+  out=$(run_save "$d" -y); st=$?
+  check_not "benign content is not a credential: ${benign:0:22}" "credential-shaped content" "$out"
+  check_status "benign content exits 0" 0 "$st"
+  rm -rf "$d"
+done
+
 echo "nd-status"
 
 d=$(new_fixture)
