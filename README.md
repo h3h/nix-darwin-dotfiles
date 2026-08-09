@@ -4,7 +4,8 @@ Manage dotfiles with nix-darwin **without** giving up the application's own
 settings UI — and without letting those edits quietly rot in an uncommitted
 working tree.
 
-Provides a home-manager module plus two commands, `nd-switch` and `nd-save`.
+Provides a home-manager module plus three commands: `nd-switch`, `nd-save` and
+`nd-status`.
 
 ## The problem
 
@@ -34,14 +35,19 @@ Copy, don't symlink. Then make the drift visible and easy to capture.
 
 1. **Placement.** At activation, each managed file is copied from the store into
    place, and a manifest records what was placed: store source, destination,
-   and the file's path inside your flake repo.
-2. **Detection.** A file has drifted when it differs from the store source it
-   was placed from. That is a content comparison against *what was actually
-   installed*, which is what makes the next point work.
+   and the file's path inside your flake repo. Each glob pattern also gets a
+   record, so files the application creates later can be recognised.
+2. **Detection.** `nd-status` reads the manifest and classifies every managed
+   path as `drifted` (differs from the store source it was placed from),
+   `missing` (deleted) or `new` (a file under a glob root that matches a
+   pattern and has no record yet). Drift is a content comparison against *what
+   was actually installed*, which is what makes the next point work.
 3. **Gate.** `nd-switch` refuses to switch while any managed file has drifted,
-   because switching would copy over it.
-4. **Capture.** `nd-save` copies drifted files back into the repo and commits
-   them.
+   because switching would copy over it. `missing` and `new` are reported but
+   do not block: a missing file will be restored by the switch, and a new file
+   has no store source to be overwritten by.
+4. **Capture.** `nd-save` copies drifted and new files back into the repo and
+   commits them.
 
 ### Why compare against the store, not the repo
 
@@ -84,6 +90,16 @@ Then, in your home-manager configuration:
       ".config/zed/keymap.json" = "zed/keymap.json";
       ".config/wezterm/wezterm.lua" = "wezterm/wezterm.lua";
     };
+
+    globs = {
+      ".config/nvim" = {
+        source = "nvim";
+        patterns = [ "init.lua" "lua/**/*.lua" "lazy-lock.json" ];
+      };
+    };
+
+    # Optional: refuse to commit anywhere else.
+    expectedBranch = "main";
   };
 }
 ```
@@ -91,6 +107,28 @@ Then, in your home-manager configuration:
 `sourceDir` and `repoSubdir` describe the same directory twice, once as a store
 path for placement and once as a repo-relative path for copy-back. They have to
 agree; nothing verifies that for you.
+
+`files` names one file each. `globs` names a *set*, keyed by destination root:
+everything matching is placed exactly as a `files` entry would be, and a file
+that appears under the destination root later and matches a pattern is captured
+rather than ignored. That is what makes lazy.nvim's `lazy-lock.json` — a file
+you never declare, whose whole purpose is to be regenerated — trackable.
+
+| Pattern | Matches |
+| --- | --- |
+| `init.lua` | that file, at the root |
+| `*.lua` | any `.lua` directly under the root |
+| `?.lua` | a one-character name, directly under the root |
+| `lua/**/*.lua` | any `.lua` at any depth under `lua/` |
+| `**/*.json` | any `.json` at any depth |
+| `colors/**` | everything below `colors/` |
+
+Bracket expressions and brace expansion are not supported; their characters are
+escaped and matched literally.
+
+Only what a pattern names is ever captured. This is an allowlist deliberately: a
+managed *directory* would need an ignore list maintained against an application
+you do not control.
 
 ## Usage
 
@@ -100,49 +138,97 @@ $ nd-switch --build         # build only: no sudo, no switch
 $ nd-switch --allow-dirty   # switch even though managed files drifted
 $ nd-switch --rollback      # back one generation
 $ nd-switch --rollback 3    # back three
-$ nd-save                   # copy drifted files back, review, commit
+$ nd-save                   # copy drifted and new files back, review, commit
 $ nd-save -m "Update Zed"   # with a commit message
 $ nd-save -y                # skip the confirmation
+$ nd-save --force           # overwrite repo edits that were never placed
+$ nd-save --branch main     # require a branch for this run
+$ nd-status                 # what has drifted, gone missing, or appeared
 ```
 
-A typical session:
+`nd-status` prints one line per finding, `<kind>` TAB `<path under $HOME>` TAB
+`<path under the repo root>`, and exits 0 whether or not it found anything —
+findings are not an error condition, and what one means is the caller's
+decision. It exits 1 when there is no manifest to read, and on a bad argument.
+
+A typical session — Zed has rewritten its settings, and lazy.nvim has written a
+`lazy-lock.json` that the repo has never seen:
 
 ```console
+$ nd-status
+drifted	.config/zed/settings.json	files/zed/settings.json
+new	.config/nvim/lazy-lock.json	files/nvim/lazy-lock.json
+
 $ nd-switch
+nd-switch: these files are not yet in the repo:
+  .config/nvim/lazy-lock.json
+nd-switch: run 'nd-save' to capture them.
 nd-switch: these files changed since they were placed:
   .config/zed/settings.json
 nd-switch: switching would overwrite them.
 nd-switch: run 'nd-save' to copy them back and commit, or --allow-dirty to discard
 
-$ nd-save -m "Turn on inlay hints"
+$ nd-save
 nd-save: copied back into the repo
   .config/zed/settings.json
+  .config/nvim/lazy-lock.json
+
+nd-save: changes
+diff --git a/files/nvim/lazy-lock.json b/files/nvim/lazy-lock.json
+new file mode 100644
 ...
 nd-save: will commit to branch 'main'
 nd-save: proceed? [y/N] y
+[main 3772a45] Save config written by nvim and zed
+ 2 files changed, 2 insertions(+), 1 deletion(-)
+ create mode 100644 files/nvim/lazy-lock.json
 nd-save: committed. Not pushed.
 
 $ nd-switch
 nd-switch: building mymac from /Users/alice/.config/nix-darwin
 ```
 
+The commit subject is derived from the destinations, so `git log --oneline`
+says which application rewrote what. One application gives `Save zed config
+written by the app`; several give `Save config written by nvim and zed`. `-m`
+still wins.
+
+Deleting a managed file is not drift, so it does not block a switch — but it is
+reported, by both commands:
+
+```console
+$ nd-switch
+nd-switch: these managed files are gone and will be restored:
+  .config/zed/settings.json
+
+$ nd-save
+nd-save: these managed files are gone; there is nothing to save for them:
+  .config/zed/settings.json
+nd-save: the next switch will restore them.
+```
+
 With zsh integration enabled (the default), an interactive shell prints a single
-line when anything has drifted:
+line when anything needs attention. It forks `nd-status` once, whatever the
+number of managed files:
 
 ```
-nd: 2 config file(s) drifted — run nd-save to audit and commit
+nd: 1 missing, 1 new config file(s) — run nd-save to audit and commit
 ```
 
-`nd-switch` reads the hostname, so it needs no per-machine configuration.
-`ND_FLAKE`, `ND_HOST` and `ND_MANIFEST` override the defaults.
+`nd-switch` reads the hostname, so it needs no per-machine configuration. The
+defaults are overridable from the environment: `ND_FLAKE` and `ND_HOST` by
+`nd-switch`, `ND_FLAKE`, `ND_MANIFEST` and `ND_EXPECTED_BRANCH` by `nd-save`,
+`ND_MANIFEST` by all three. When the commands come from the module, `flakePath`,
+`manifestPath` and `expectedBranch` are baked into wrappers as *defaults*, so an
+explicitly exported `ND_*` still wins.
 
 ## Safety
 
 - **`nd-save` scans before it copies.** Applications write credentials into
-  their own config routinely, and your flake repo may be shared. If a drifted
-  file contains credential-shaped content, nothing is copied and nothing is
-  staged — a secret copied into the working tree and then refused is a secret
-  waiting to be committed later by accident.
+  their own config routinely, and your flake repo may be shared. If any file it
+  is about to save contains credential-shaped content, nothing is copied and
+  nothing is staged — a secret copied into the working tree and then refused is
+  a secret waiting to be committed later by accident.
 - **`nd-save` never pushes.**
 - **The scan is pattern-based.** It catches common key shapes and any
   `api_key` / `token` / `secret` / `password` assignment. It will not catch a
@@ -151,8 +237,20 @@ nd: 2 config file(s) drifted — run nd-save to audit and commit
 - **Activation removes a pre-existing symlink before copying.** Without that,
   `install` writes *through* an old `mkOutOfStoreSymlink` straight back into the
   repo, silently preserving the behaviour this module replaces.
-- **`nd-save` commits to whatever branch is checked out.** It prints the branch
-  and asks first, but does not refuse an unexpected one.
+- **`nd-save` refuses an unexpected branch.** Set `programs.nd.expectedBranch`
+  and it refuses to commit anywhere else, including under `-y`. `--branch NAME`
+  overrides it for one run. With no expected branch set, `nd-save` prints the
+  branch and proceeds, as before. A detached HEAD is refused whatever you set,
+  because the commit would be unreachable as soon as anything else is checked
+  out.
+- **`nd-save` refuses to overwrite repo edits that were never placed.** If the
+  repo copy of a managed file differs from what was last placed, you have an
+  edit waiting to be switched in; nd-save names it and stops rather than copying
+  over it. The same applies to a newly captured file whose repo path is already
+  occupied. `--force` overrides.
+- **`nd-save` commits only the files it copied.** Every git operation it runs
+  takes a pathspec, so anything else you had staged stays staged and
+  uncommitted.
 
 ## Tests
 
@@ -161,17 +259,29 @@ $ nix flake check          # runs the suite in a sandbox
 $ bash tests/run.sh        # or directly
 ```
 
-40 cases covering argument parsing, drift detection, the gate and its override,
-flag ordering, copy-back, commit contents, declining, and credential refusal.
-Every case builds a synthetic `$HOME`, manifest and throwaway git repo, so the
-suite needs no sudo, performs no switch, and never touches a real home
-directory.
+128 cases covering argument parsing; drift, missing and new classification; the
+gate and its override; flag ordering; copy-back; commit scoping and contents;
+the branch guard and detached HEAD; the unplaced-repo-edit refusal and
+`--force`; derived commit subjects; credential refusal and the benign shapes
+that must not trip it; the zsh notice; and the end-to-end capture loop for an
+application-created file. Every case builds a synthetic `$HOME`, manifest and
+throwaway git repo, so the suite needs no sudo, performs no switch, and never
+touches a real home directory.
+
+`nix flake check` also runs `tests/glob.nix`, a pure evaluation test that pins
+`globToERE`'s translations and the file sets they match.
 
 ## Limitations
 
-- Files are placed mode `0644`. Managing anything that must be executable or
-  private needs a change here.
-- Only regular files. Directories must be listed file by file.
+- Files are placed mode `0644`, deliberately: the credential scan's position is
+  that nothing secret belongs in a managed file, and git records only the
+  executable bit, so a per-file mode could not survive the round-trip anyway.
+- Glob patterns support `**/`, a trailing `/**`, `*` and `?`. Bracket
+  expressions and brace expansion match literally.
+- Only regular files are enumerated under a glob root; symlinks, directories and
+  anything else `find -type f` rejects are skipped.
+- A path containing a newline under a glob root is skipped, with a warning. The
+  output format is one record per line and cannot represent it.
 - `nd-switch --rollback` reverts the generation, and placed files come back with
   it — but any drift you had not saved is gone, exactly as with the gate.
 - macOS and nix-darwin only. The package builds anywhere; `nd-switch` calls

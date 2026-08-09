@@ -209,8 +209,20 @@ in
       type = types.str;
       default = ".local/state/nd/manifest";
       description = ''
-        Where to record what was placed, relative to `$HOME`. Each line is
-        store-source, destination and repo path, tab separated.
+        Where to record what was placed, relative to `$HOME`. Tab-separated,
+        with two kinds of record distinguished by field 4:
+
+        - a *file* record has three fields — store source, destination relative
+          to `$HOME`, path relative to {option}`flakePath` — and no field 4, so
+          the three-field lines a previous generation wrote keep parsing;
+        - a *glob* record has five — a literal `-`, the destination root, the
+          repo root, the word `glob`, and the ERE that {option}`globs`.patterns
+          was translated to at evaluation time.
+
+        Field 1 of a glob record is a placeholder because nothing reads it:
+        every file a pattern matches already has its own file record carrying
+        its store source, and interpolating the source root here would copy the
+        whole subtree into the store a second time for a field no reader uses.
       '';
     };
 
@@ -233,15 +245,19 @@ in
     installPackages = mkOption {
       type = types.bool;
       default = true;
-      description = "Whether to add nd-switch and nd-save to {option}`home.packages`.";
+      description = ''
+        Whether to add nd-switch, nd-save and nd-status to
+        {option}`home.packages`.
+      '';
     };
 
     enableZshIntegration = mkOption {
       type = types.bool;
       default = true;
       description = ''
-        Print a one-line notice at interactive zsh startup when managed files
-        have drifted. Costs one `cmp` per managed file and starts no processes.
+        Print a one-line notice at interactive zsh startup when managed config
+        needs attention: drifted, missing and newly appeared files are each
+        counted. Forks `nd-status` once, whatever the number of managed files.
       '';
     };
   };
