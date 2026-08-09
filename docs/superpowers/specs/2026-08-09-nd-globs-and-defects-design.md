@@ -1,11 +1,16 @@
 # Design: glob-tracked files, and the v0.1.0 defect fixes
 
 Date: 2026-08-09
-Status: approved, not yet implemented
+Status: approved; implemented, with the amendment below
 Target release: v0.2.0
 
 Covers every defect in `nix-darwin-dotfiles-issues.md` except 7, plus a
 replacement for 7 that the issues document did not propose.
+
+**Amendment, same day.** Defect 10 was appended to the issues document after
+this spec was written and approved, and after implementation had begun. It is
+in scope and is specified in "10 — name what `--allow-dirty` is about to
+discard" below. Nothing else in this document changes.
 
 ## Context
 
@@ -389,6 +394,39 @@ UUID, and a base64 data URI.
 neither blocks on it. `nd-switch` says the file will be restored; `nd-save` says
 it is being skipped. The behaviour that annoyed nobody — restoring — is kept.
 The behaviour that did — doing it silently — is not.
+
+### 10 — name what `--allow-dirty` is about to discard
+
+Added by amendment; see the note at the top of this document.
+
+`nd-switch` computes the drift list only inside `if [ -z "$allow_dirty" ]`, so
+the override path — the one that actually destroys something — prints nothing.
+The refusal path names every drifted file; the destructive path names none. The
+flag's own help text says "switch even though managed config has drifted", which
+reads as *proceed*, not *overwrite*.
+
+The concrete case is the same file the glob work exists for: `lazy-lock.json`
+after a `:Lazy update`, silently reverted to the committed pins by an
+`--allow-dirty` switch run for an unrelated reason.
+
+**Fix:** compute the drift list unconditionally and, when `--allow-dirty` is
+set, print it as a warning naming every file about to be overwritten, then
+proceed. This is a strict addition — the gate's behaviour without the flag does
+not change.
+
+The `nd-status` refactor already computes the list unconditionally, so this is
+a matter of moving the report out from under the `allow_dirty` guard, exactly as
+`missing` and `new` already are.
+
+**Whether to also copy each drifted file to `<path>.nd-bak`** — which the issues
+document floats but does not require — is a separate decision, recorded in the
+escalation log rather than here.
+
+**Test:** drift the fixture, run with `--allow-dirty`, and assert both that the
+output names the file *and* that the gate is still bypassed. Note that
+`tests/run.sh`'s existing `--allow-dirty skips the gate` case asserts the
+absence of the drift message and therefore pins the unfixed behaviour; it has to
+be rewritten to assert the absence of the *refusal*, not of the *list*.
 
 ### 9 — dry-run activation writes nothing
 
