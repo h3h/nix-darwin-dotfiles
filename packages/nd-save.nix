@@ -32,6 +32,7 @@ writeShellApplication {
     msg=""
     assume_yes=""
     force=""
+    expected_branch="''${ND_EXPECTED_BRANCH:-}"
 
     while [ $# -gt 0 ]; do
       case "$1" in
@@ -48,11 +49,17 @@ writeShellApplication {
           force=1
           shift
           ;;
+        --branch)
+          shift
+          expected_branch="''${1:-}"
+          shift || true
+          ;;
         -h | --help)
-          echo "usage: nd-save [-m MESSAGE] [-y] [--force]"
+          echo "usage: nd-save [-m MESSAGE] [-y] [--force] [--branch NAME]"
           echo "  Copies config that applications rewrote back into the flake repo,"
           echo "  then commits it. Never pushes."
-          echo "  --force  overwrite repo files that carry edits never placed"
+          echo "  --force        overwrite repo files that carry edits never placed"
+          echo "  --branch NAME  require this branch; overrides ND_EXPECTED_BRANCH"
           exit 0
           ;;
         *)
@@ -69,6 +76,27 @@ writeShellApplication {
 
     if ! git -C "$flake" rev-parse --git-dir > /dev/null 2>&1; then
       echo "nd-save: $flake is not a git repository" >&2
+      exit 1
+    fi
+
+    # The branch guard runs before the scan and before any copy. With -y the old
+    # code printed the branch to a terminal nobody is reading and committed
+    # regardless, so the unattended path — the one -y exists for — was the only
+    # path with no check.
+    branch="$(git -C "$flake" branch --show-current)"
+
+    if [ -z "$branch" ]; then
+      echo "nd-save: HEAD is detached in $flake — refusing." >&2
+      echo "nd-save: a commit here becomes unreachable as soon as anything else is checked out." >&2
+      echo "nd-save: run 'git switch <branch>' first." >&2
+      exit 1
+    fi
+
+    if [ -n "$expected_branch" ] && [ "$branch" != "$expected_branch" ]; then
+      echo "nd-save: on branch '$branch', expected '$expected_branch' — refusing." >&2
+      echo "nd-save: nd-save is prompted by a shell notice rather than by you choosing a" >&2
+      echo "nd-save: moment, so app config lands on whatever topic branch happens to be out." >&2
+      echo "nd-save: switch branch, or pass --branch '$branch' to commit here anyway." >&2
       exit 1
     fi
 
@@ -225,7 +253,6 @@ writeShellApplication {
     git -C "$flake" --no-pager diff HEAD -- "''${paths[@]}"
     echo
 
-    branch="$(git -C "$flake" branch --show-current)"
     echo "nd-save: will commit to branch '$branch'"
 
     if [ -z "$assume_yes" ]; then

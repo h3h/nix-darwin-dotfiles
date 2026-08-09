@@ -359,6 +359,60 @@ check "a nested capture creates its repo directory" "copied back into the repo" 
 check "the nested file lands in the repo" "return 4" "$(cat "$d/repo/files/nv/lua/deep/new.lua")"
 rm -rf "$d"
 
+# Defect 3. With -y the branch was printed to a terminal nobody is reading and
+# the commit proceeded regardless, so the unattended path was the one with no
+# check at all.
+d=$(new_fixture)
+drift "$d"
+out=$(HOME="$d/home" ND_FLAKE="$d/repo" ND_EXPECTED_BRANCH=main "$ND_SAVE" -y 2>&1); st=$?
+check "the expected branch matching proceeds" "committed" "$out"
+check_status "matching exits 0" 0 "$st"
+rm -rf "$d"
+
+d=$(new_fixture)
+git -C "$d/repo" switch -q -c topic
+drift "$d"
+out=$(HOME="$d/home" ND_FLAKE="$d/repo" ND_EXPECTED_BRANCH=main "$ND_SAVE" -y 2>&1); st=$?
+check "a mismatched branch is refused under -y" "expected 'main'" "$out"
+check_status "a mismatched branch exits 1" 1 "$st"
+check "nothing was committed" "initial" "$(git -C "$d/repo" log -1 --format=%s)"
+rm -rf "$d"
+
+d=$(new_fixture)
+git -C "$d/repo" switch -q -c topic
+drift "$d"
+out=$(HOME="$d/home" ND_FLAKE="$d/repo" ND_EXPECTED_BRANCH=main "$ND_SAVE" -y --branch topic 2>&1)
+check "--branch overrides the environment" "committed" "$out"
+rm -rf "$d"
+
+# git branch --show-current prints an empty string on a detached HEAD, which the
+# old code reported as branch '' and then committed onto anyway. That commit is
+# unreachable the moment anything else is checked out.
+d=$(new_fixture)
+git -C "$d/repo" checkout -q --detach HEAD
+drift "$d"
+out=$(run_save "$d" -y); st=$?
+check "a detached HEAD is refused" "detached" "$out"
+check_status "a detached HEAD exits 1" 1 "$st"
+rm -rf "$d"
+
+d=$(new_fixture)
+git -C "$d/repo" checkout -q --detach HEAD
+drift "$d"
+out=$(run_save "$d" -y --branch main --force); st=$?
+check "a detached HEAD is refused even with --branch and --force" "detached" "$out"
+check_status "that still exits 1" 1 "$st"
+rm -rf "$d"
+
+# No constraint set is the existing behaviour: print and prompt, do not refuse.
+d=$(new_fixture)
+git -C "$d/repo" switch -q -c topic
+drift "$d"
+out=$(run_save "$d" -y)
+check "no constraint means no refusal" "committed" "$out"
+check "the branch is still printed" "branch 'topic'" "$out"
+rm -rf "$d"
+
 echo "nd-status"
 
 d=$(new_fixture)
