@@ -44,6 +44,10 @@ check_not() {
   if printf '%s' "$3" | grep -qF "$2"; then no "$1" "did not want '$2'"; else ok "$1"; fi
 }
 
+check_empty() { # check_empty <name> <actual>
+  if [ -z "$2" ]; then ok "$1"; else no "$1" "wanted empty, got: $2"; fi
+}
+
 check_status() { # check_status <name> <expected> <actual>
   if [ "$2" = "$3" ]; then ok "$1"; else no "$1" "wanted exit $2, got $3"; fi
 }
@@ -171,7 +175,7 @@ for secret in \
   check "credential refused: ${secret:0:18}" "credential-shaped content" "$out"
   check_status "credential exits 1" 1 "$st"
   check_not "credential never reaches the repo" "$secret" "$(cat "$d/repo/files/config.toml")"
-  check "repo working tree is untouched" "" "$(git -C "$d/repo" status --porcelain)"
+  check_empty "repo working tree is untouched" "$(git -C "$d/repo" status --porcelain)"
   rm -rf "$d"
 done
 
