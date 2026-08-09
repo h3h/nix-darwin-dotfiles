@@ -79,6 +79,42 @@ new_fixture() {
   printf '%s' "$d"
 }
 
+# A $HOME with a glob-tracked root: two placed files, a manifest carrying both
+# file records and a glob record, and a git repo acting as the flake.
+#
+# The ERE in the manifest is what globToERE produces for "**/*.lua" — the
+# manifest carries regexes, not globs, so the shell never parses a glob.
+new_glob_fixture() {
+  local d
+  d="$(mktemp -d)"
+  mkdir -p "$d/home/.local/state/nd" "$d/home/.config/nv/lua" \
+           "$d/repo/files/nv/lua" "$d/store/lua"
+
+  printf 'return 1\n' > "$d/store/init.lua"
+  printf 'return 2\n' > "$d/store/lua/plug.lua"
+  chmod 0444 "$d/store/init.lua" "$d/store/lua/plug.lua"
+
+  install -m 0644 "$d/store/init.lua"     "$d/home/.config/nv/init.lua"
+  install -m 0644 "$d/store/lua/plug.lua" "$d/home/.config/nv/lua/plug.lua"
+  install -m 0644 "$d/store/init.lua"     "$d/repo/files/nv/init.lua"
+  install -m 0644 "$d/store/lua/plug.lua" "$d/repo/files/nv/lua/plug.lua"
+  printf '{}\n' > "$d/repo/flake.nix"
+
+  {
+    printf '%s\t%s\t%s\n' "$d/store/init.lua"     ".config/nv/init.lua"     "files/nv/init.lua"
+    printf '%s\t%s\t%s\n' "$d/store/lua/plug.lua" ".config/nv/lua/plug.lua" "files/nv/lua/plug.lua"
+    printf '%s\t%s\t%s\t%s\t%s\n' "$d/store" ".config/nv" "files/nv" "glob" '(.*/)?[^/]*\.lua'
+    printf '%s\t%s\t%s\t%s\t%s\n' "$d/store" ".config/nv" "files/nv" "glob" 'lazy-lock\.json'
+  } > "$d/home/.local/state/nd/manifest"
+
+  git -C "$d/repo" init -q -b main
+  git -C "$d/repo" config user.email t@example.com
+  git -C "$d/repo" config user.name Test
+  git -C "$d/repo" add -A
+  git -C "$d/repo" commit -qm initial
+  printf '%s' "$d"
+}
+
 drift() { printf 'setting = 2\n' > "$1/home/.config/app/config.toml"; }
 
 run_switch() { HOME="$1/home" ND_FLAKE="$1/repo" "$ND_SWITCH" "${@:2}" 2>&1; }
@@ -213,6 +249,78 @@ d=$(new_fixture)
 drift "$d"
 HOME="$d/home" "$ND_STATUS" > /dev/null 2>&1; st=$?
 check_status "findings still exit 0" 0 "$st"
+rm -rf "$d"
+
+d=$(new_glob_fixture)
+out=$(run_status "$d")
+check_empty "glob fixture with no extra files reports nothing" "$out"
+rm -rf "$d"
+
+# The whole point of defect 7: a file the application invented.
+d=$(new_glob_fixture)
+printf '{"plug":"abc"}\n' > "$d/home/.config/nv/lazy-lock.json"
+out=$(run_status "$d")
+check "an app-created file is new" "new	.config/nv/lazy-lock.json	files/nv/lazy-lock.json" "$out"
+rm -rf "$d"
+
+d=$(new_glob_fixture)
+printf 'return 3\n' > "$d/home/.config/nv/lua/extra.lua"
+out=$(run_status "$d")
+check "a new file in a subdirectory is found" "new	.config/nv/lua/extra.lua	files/nv/lua/extra.lua" "$out"
+rm -rf "$d"
+
+d=$(new_glob_fixture)
+printf 'junk\n' > "$d/home/.config/nv/notes.txt"
+out=$(run_status "$d")
+check_not "a file matching no pattern is ignored" "notes.txt" "$out"
+rm -rf "$d"
+
+# A placed file is inside the glob root and matches the pattern. It is already
+# tracked; reporting it as new would make every switch look like a capture.
+d=$(new_glob_fixture)
+out=$(run_status "$d")
+check_not "a placed file inside the root is never new" "new	.config/nv/init.lua" "$out"
+rm -rf "$d"
+
+d=$(new_glob_fixture)
+drift_glob() { printf 'return 99\n' > "$1/home/.config/nv/init.lua"; }
+drift_glob "$d"
+out=$(run_status "$d")
+check "a placed file inside the root still drifts" "drifted	.config/nv/init.lua	files/nv/init.lua" "$out"
+rm -rf "$d"
+
+# Two patterns could both match one file. It must be reported once.
+d=$(new_glob_fixture)
+printf '%s\t%s\t%s\t%s\t%s\n' "$d/store" ".config/nv" "files/nv" "glob" '(.*/)?extra\.lua' \
+  >> "$d/home/.local/state/nd/manifest"
+printf 'return 3\n' > "$d/home/.config/nv/lua/extra.lua"
+out=$(run_status "$d" | grep -c 'extra.lua')
+check "a file matching two patterns is emitted once" "1" "$out"
+rm -rf "$d"
+
+d=$(new_glob_fixture)
+ln -s /etc/hosts "$d/home/.config/nv/link.lua"
+mkdir -p "$d/home/.config/nv/dir.lua"
+out=$(run_status "$d")
+check_not "a symlink under the root is skipped" "link.lua" "$out"
+check_not "a directory under the root is skipped" "dir.lua" "$out"
+rm -rf "$d"
+
+# The output format is line-based and cannot represent this. Skipping loudly
+# beats emitting a line every consumer parses as two.
+d=$(new_glob_fixture)
+touch "$d/home/.config/nv/$(printf 'we\nird').lua"
+out=$(run_status "$d")
+check "a path with a newline is skipped with a warning" "skipping path with a newline" "$out"
+check_not "a path with a newline is not emitted" "new	.config/nv/we" "$out"
+rm -rf "$d"
+
+# A glob root the application has not created yet is not an error.
+d=$(new_glob_fixture)
+rm -rf "$d/home/.config/nv"
+out=$(run_status "$d"); st=$?
+check_status "an absent glob root exits 0" 0 "$st"
+check "an absent glob root reports its files missing" "missing	.config/nv/init.lua" "$out"
 rm -rf "$d"
 
 echo

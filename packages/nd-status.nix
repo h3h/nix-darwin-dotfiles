@@ -46,6 +46,38 @@ writeShellApplication {
 
     tab="$(printf '\t')"
 
+    # Every destination the manifest places explicitly. A placed file is never
+    # "new" however many glob patterns also happen to match it — otherwise every
+    # managed file inside a glob root would be reported on every run.
+    #
+    # cut's default delimiter is tab, which is the manifest's.
+    placed="$(cut -f2 "$manifest")"
+
+    scan_glob() {
+      local root="$1" repo_root="$2" ere="$3"
+      local f rel
+      if [ ! -d "$HOME/$root" ]; then
+        return 0
+      fi
+      while IFS= read -r -d "" f; do
+        rel="''${f#"$HOME/$root/"}"
+        # The output is line-based, and so is the membership test below. A path
+        # containing a newline cannot be represented in either, so it is skipped
+        # rather than emitted as something both would misparse.
+        if [ "''${rel%%$'\n'*}" != "$rel" ]; then
+          echo "nd-status: skipping path with a newline under $root" >&2
+          continue
+        fi
+        if ! printf '%s' "$rel" | grep -qxE "$ere"; then
+          continue
+        fi
+        if printf '%s\n' "$placed" | grep -qxF "$root/$rel"; then
+          continue
+        fi
+        printf 'new\t%s\t%s\n' "$root/$rel" "$repo_root/$rel"
+      done < <(find "$HOME/$root" -type f -print0)
+    }
+
     scan() {
       local src dest repo_rel kind pattern
       while IFS="$tab" read -r src dest repo_rel kind pattern; do
@@ -54,7 +86,7 @@ writeShellApplication {
         fi
         case "''${kind:-}" in
           glob)
-            : "''${pattern:-}" # Task 3.
+            scan_glob "$dest" "$repo_rel" "$pattern"
             ;;
           *)
             if [ ! -e "$HOME/$dest" ]; then
