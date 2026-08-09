@@ -60,6 +60,36 @@ let
     map (f: "${f.src}\t${f.dest}\t${f.repoRel}\n") fileRecords
     ++ map (g: "${g.srcRoot}\t${g.destRoot}\t${g.repoRoot}\tglob\t${g.ere}\n") patternRecords
   );
+
+  # The declared options have to reach the binaries. Without this, flakePath and
+  # manifestPath are documented settings that silently do nothing, because each
+  # tool falls back to its own hardcoded default.
+  #
+  # --set-default rather than --set: an explicitly exported variable still wins,
+  # which is what the tests and the documented ND_* overrides rely on.
+  ndPkgs = self.packages.${pkgs.stdenv.hostPlatform.system};
+
+  wrap =
+    name: drv:
+    pkgs.runCommand "${name}-nd"
+      {
+        nativeBuildInputs = [ pkgs.makeWrapper ];
+        meta = drv.meta or { };
+      }
+      ''
+        mkdir -p "$out/bin"
+        makeWrapper "${drv}/bin/${name}" "$out/bin/${name}" \
+          --set-default ND_FLAKE ${lib.escapeShellArg cfg.flakePath} \
+          --set-default ND_MANIFEST ${lib.escapeShellArg "${config.home.homeDirectory}/${cfg.manifestPath}"} \
+          ${lib.optionalString (
+            cfg.expectedBranch != ""
+          ) "--set-default ND_EXPECTED_BRANCH ${lib.escapeShellArg cfg.expectedBranch}"}
+      '';
+
+  # ND_EXPECTED_BRANCH is set on all three for uniformity; only nd-save reads it.
+  ndSwitch = wrap "nd-switch" ndPkgs.nd-switch;
+  ndSave = wrap "nd-save" ndPkgs.nd-save;
+  ndStatus = wrap "nd-status" ndPkgs.nd-status;
 in
 {
   options.programs.nd = {
@@ -177,6 +207,22 @@ in
       '';
     };
 
+    expectedBranch = mkOption {
+      type = types.str;
+      default = "";
+      example = "main";
+      description = ''
+        Branch `nd-save` is allowed to commit to. Empty means no constraint.
+
+        When set and the checked-out branch differs, `nd-save` refuses —
+        including under `-y`, because the unattended path is the one with nobody
+        reading the branch name. `--branch NAME` overrides it for one run.
+
+        A detached HEAD is refused whatever this is set to: the commit would be
+        unreachable as soon as anything else is checked out.
+      '';
+    };
+
     installPackages = mkOption {
       type = types.bool;
       default = true;
@@ -215,8 +261,9 @@ in
     }) cfg.globs;
 
     home.packages = mkIf cfg.installPackages [
-      self.packages.${pkgs.stdenv.hostPlatform.system}.nd-switch
-      self.packages.${pkgs.stdenv.hostPlatform.system}.nd-save
+      ndSwitch
+      ndSave
+      ndStatus
     ];
 
     # Copy into place and record what was placed.
