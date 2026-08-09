@@ -62,10 +62,6 @@ writeShellApplication {
       esac
     done
 
-    # Task 6 consumes this; referenced here so shellcheck does not call the
-    # flag's variable unused before then.
-    : "$force"
-
     if [ ! -f "$manifest" ]; then
       echo "nd-save: no manifest at $manifest — has a switch run yet?" >&2
       exit 1
@@ -117,6 +113,55 @@ writeShellApplication {
         fi
       done
       echo "nd-save: remove it, or copy and stage by hand with git add -p" >&2
+      exit 1
+    fi
+
+    # Three versions of any managed file exist: the store source, the live file
+    # in $HOME, and the file in the repo working tree. Drift is a difference
+    # between the first two. If the third also differs from the store, the repo
+    # carries an edit that has not been placed yet, and copying over it destroys
+    # work that nd-save never even showed you — the preview is computed after
+    # the copy.
+    #
+    # nd-switch gets the analogous case right and documents why: it compares
+    # against the store, not the repo, because comparing to the repo cannot
+    # distinguish "the app changed this" from "I edited the repo and want to
+    # place it". This is the same three-way awareness on the save side.
+    #
+    # The rule is conditional on purpose. "The repo differs from the store" is
+    # the right question for a declared file and a meaningless one for a file
+    # the application just invented, which has no store source at all — for
+    # those the question is whether the repo already holds a file there.
+    blockers=""
+    while IFS="$tab" read -r kind dest repo_rel; do
+      if [ -z "''${dest:-}" ]; then
+        continue
+      fi
+      case "$kind" in
+        new)
+          if [ -e "$flake/$repo_rel" ]; then
+            blockers="$blockers$repo_rel (already in the repo, never placed)
+    "
+          fi
+          ;;
+        *)
+          src="$(awk -F'\t' -v d="$dest" '$2 == d && $4 == "" { print $1; exit }' "$manifest")"
+          if [ -n "$src" ] && [ -e "$flake/$repo_rel" ] && ! cmp -s "$src" "$flake/$repo_rel"; then
+            blockers="$blockers$repo_rel (repo copy differs from what was placed)
+    "
+          fi
+          ;;
+      esac
+    done < <(printf '%s\n' "$candidates")
+
+    if [ -n "$blockers" ] && [ -z "$force" ]; then
+      echo "nd-save: the repo carries edits that were never placed; nothing copied:" >&2
+      printf '%s' "$blockers" | while IFS= read -r line; do
+        if [ -n "$line" ]; then
+          printf '  %s\n' "$line" >&2
+        fi
+      done
+      echo "nd-save: switch first to place them, or re-run with --force to overwrite." >&2
       exit 1
     fi
 

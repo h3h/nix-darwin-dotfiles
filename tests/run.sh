@@ -294,6 +294,71 @@ for secret in \
   rm -rf "$d"
 done
 
+# Defect 2. Three versions of a managed file exist: the store source, the live
+# file, and the repo working tree. nd-save compared only the first two before
+# overwriting the third, so an edit made in the repo and not yet placed was
+# destroyed with no warning, no backup, and no mention in the preview — the
+# preview is computed after the copy, so it showed the app's content as though
+# it were the only change.
+d=$(new_fixture)
+printf 'setting = 3 # my unplaced edit\n' > "$d/repo/files/config.toml"
+drift "$d"
+out=$(run_save "$d" -y); st=$?
+check "an unplaced repo edit is refused" "never placed" "$out"
+check "the refusal names the file" "files/config.toml" "$out"
+check_status "the refusal exits 1" 1 "$st"
+check "the repo edit survives" "my unplaced edit" "$(cat "$d/repo/files/config.toml")"
+check "nothing was committed" "initial" "$(git -C "$d/repo" log -1 --format=%s)"
+rm -rf "$d"
+
+# --force is the escape hatch. It must overwrite, because that is what it says.
+d=$(new_fixture)
+printf 'setting = 3 # my unplaced edit\n' > "$d/repo/files/config.toml"
+drift "$d"
+out=$(run_save "$d" -y --force)
+check "--force overwrites" "copied back into the repo" "$out"
+check "--force really overwrote" "setting = 2" "$(cat "$d/repo/files/config.toml")"
+rm -rf "$d"
+
+# The related bug at the old :126-128: every manifest entry whose repo file
+# existed was staged, so an uncommitted edit to a managed file that had NOT
+# drifted was committed anyway.
+d=$(new_fixture)
+printf 'setting = 3 # my unplaced edit\n' > "$d/repo/files/config.toml"
+out=$(run_save "$d" -y)
+check "an undrifted file with a repo edit is not committed" "nothing to save" "$out"
+check "the repo edit survives" "my unplaced edit" "$(cat "$d/repo/files/config.toml")"
+check "nothing was committed" "initial" "$(git -C "$d/repo" log -1 --format=%s)"
+rm -rf "$d"
+
+# The rule is conditional. "Repo differs from store" is meaningless for a file
+# the app just invented, which has no store source at all — for those the
+# question is whether the repo already has a file there.
+d=$(new_glob_fixture)
+printf '{"plug":"abc"}\n' > "$d/home/.config/nv/lazy-lock.json"
+out=$(run_save "$d" -y)
+check "a new capture with no repo counterpart proceeds" "copied back into the repo" "$out"
+check "the new file lands in the repo" '"plug":"abc"' "$(cat "$d/repo/files/nv/lazy-lock.json")"
+rm -rf "$d"
+
+d=$(new_glob_fixture)
+printf '{"plug":"abc"}\n' > "$d/home/.config/nv/lazy-lock.json"
+printf '{"plug":"mine"}\n' > "$d/repo/files/nv/lazy-lock.json"
+out=$(run_save "$d" -y); st=$?
+check "a new capture whose repo file exists is refused" "never placed" "$out"
+check_status "that refusal exits 1" 1 "$st"
+check "the repo file survives" '"plug":"mine"' "$(cat "$d/repo/files/nv/lazy-lock.json")"
+rm -rf "$d"
+
+# Parent directories for a capture in a subdirectory the repo does not have.
+d=$(new_glob_fixture)
+mkdir -p "$d/home/.config/nv/lua/deep"
+printf 'return 4\n' > "$d/home/.config/nv/lua/deep/new.lua"
+out=$(run_save "$d" -y)
+check "a nested capture creates its repo directory" "copied back into the repo" "$out"
+check "the nested file lands in the repo" "return 4" "$(cat "$d/repo/files/nv/lua/deep/new.lua")"
+rm -rf "$d"
+
 echo "nd-status"
 
 d=$(new_fixture)
