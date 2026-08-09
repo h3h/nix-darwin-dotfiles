@@ -212,3 +212,122 @@ recorded), `unresolved` (escalated and still undecided at hand-off).
   so passed against the unfixed binary. Replaced with `git ls-files -- <path>`,
   which asks the index directly. Both assertions were then confirmed red against
   the unfixed `nd-save` before the fix was restored.
+
+## E9 — the spec's escape list is wrong for `builtins.match`; `]` and `-` must not be escaped
+- **Task:** F1 (adversarial review follow-up)
+- **Raised:** The spec's translation algorithm, step 4, says "Escape ERE
+  metacharacters: `\` first, then `.` `+` `(` `)` `[` `]` `{` `}` `^` `$` `|`",
+  and `lib/glob.nix` implemented exactly that. GNU grep accepts `\]`;
+  `builtins.match` rejects it outright. So `patterns = [ "[abc].lua" ]`, a case
+  both the module's option description and the README document as supported
+  ("bracket characters are matched literally"), aborted evaluation of the user's
+  entire home-manager config:
+
+  ```
+  $ nix eval --impure --raw --expr 'let ... in glob.matchesAny [ (glob.globToERE "[abc].lua") ] "a.lua"'
+  error: invalid regular expression '\[abc\]\.lua'
+  ```
+
+  Every candidate character was then probed against both engines rather than
+  reasoned about. Escaped as `\c`, against `builtins.match` and `grep -qxE`:
+
+  | char | `builtins.match "\c"` | `grep -qxE '\c'` |
+  | --- | --- | --- |
+  | `\ . + ( ) [ { } ^ $ \|` | ok | ok |
+  | `]` | **throws** | ok |
+  | `-` | **throws** | ok |
+  | `<` `>` | throws | no match (word boundaries) |
+  | `=` | throws | throws |
+
+  Unescaped, both engines treat a bare `]` and a bare `}` as literal; both
+  engines reject a bare `{`.
+- **Options:** (a) drop `]` from the table, keep `}`; (b) drop both `]` and `}`,
+  on the symmetry argument that they are the closing halves of the same pairs;
+  (c) keep the table and make `matchesAny` pre-strip escapes it knows
+  `builtins.match` dislikes, i.e. a second translator in the file whose whole
+  purpose is that there is only one.
+- **Status:** resolved
+- **Resolution:** (a). The principle that survives contact with both engines is
+  "escape exactly the characters that are special to POSIX ERE". `]` outside a
+  bracket expression is *ordinary* in POSIX, so `\]` is an escape of a
+  non-special character — undefined by POSIX, tolerated by GNU grep, rejected by
+  std::regex. `}` is different: POSIX leaves a stray `}` undefined rather than
+  ordinary, it is part of interval syntax, and both engines accept `\}`. So the
+  two are not symmetric and (b) would drop an escape that is doing real work.
+  Correctness of the `]` case does not depend on the escape: `[` is still
+  escaped, so no bracket expression can ever open, so every `]` in the output is
+  unambiguously literal to both engines. `-` is absent for the same reason as
+  `]` and there is now a comment saying it must stay absent, because adding it
+  looks harmless and is not. (c) is the design's stated failure mode.
+
+  This makes the spec's step 4 stale. `docs/.../design.md` is outside this
+  change's ownership, so it is not edited here: **the spec's escape list still
+  names `]` and should be corrected to `\` `.` `+` `(` `)` `[` `{` `}` `^` `$`
+  `|`, with a note that the list is empirical.** `lib/glob.nix` carries the
+  reasoning and the failing repl transcript inline so the next editor does not
+  re-derive it from the spec.
+
+## E10 — the star-run collapse was documented but never implemented
+- **Task:** F3 (adversarial review follow-up)
+- **Raised:** `lib/glob.nix` and the spec both claim "a run of two or more `*`
+  that is neither `**/` nor a trailing `/**` collapses to a single `*`".
+  `lib.replaceStrings [ "**" ] [ "*" ]` is one left-to-right pass, so it halves
+  a run instead of collapsing it. Confirmed by reverting the fix and reading the
+  check's failure output:
+
+  ```
+  "g":"***.lua","got":"[^/]*[^/]*\\.lua"}
+  "g":"**********.lua","got":"[^/]*[^/]*[^/]*[^/]*[^/]*\\.lua"}
+  ```
+
+  Behaviourally equivalent, so no user-visible bug, but chained unbounded
+  quantifiers are the classic backtracking shape for `builtins.match`
+  (std::regex), and the comment was simply false.
+- **Options:** (a) iterate `replaceStrings` to a fixed point, making the
+  documented behaviour true; (b) correct the comment to describe the halving.
+- **Status:** resolved
+- **Resolution:** (a). The plan and the spec both state the collapse as the
+  design's intent, so weakening the comment would be changing the design to
+  match an implementation slip. The fix is four lines of self-recursion bounded
+  by the string length, it removes the backtracking shape rather than
+  documenting it, and it is cheaper than explaining in the comment why the
+  output has five chained `[^/]*` in it. Three translation cases pin it —
+  `***.lua`, `**********.lua`, and `***/x.lua`, which checks that a long run
+  ending in `/` still yields the `**/` token.
+
+## E11 — `nd-status` passes a translated ERE to `grep` without `--`
+- **Task:** F2 (adversarial review follow-up), observation only
+- **Raised:** While building the cross-engine check, `packages/nd-status.nix:71`
+  and `:74` read:
+
+  ```sh
+  if ! printf '%s' "$rel" | grep -qxE "$ere"; then
+  ```
+
+  `globToERE` does not escape `-`, and cannot (see E9), so a pattern beginning
+  with `-` — `-foo/**`, plausible for a dotfile repo with a `-` prefixed
+  directory — reaches `grep` as an option rather than a pattern:
+
+  ```
+  $ printf -- '-foo/x\n' | grep -qxE "-foo/.*"; echo $?
+  grep: error: option -f: cannot read oo/.*
+  2
+  ```
+
+  It fails silently rather than loudly. Exit 2 is not 0, the call sits under
+  `if ! ... ; then continue; fi`, and `errexit` does not apply inside an `if`
+  condition, so every path under that root is skipped and nothing is reported.
+  The new
+  `tests/glob-engines.sh` uses `grep -qxE -- "$ere"`, which is why the check does
+  not reproduce it, and there is deliberately no case with a leading `-`.
+- **Options:** (a) fix `nd-status.nix`; (b) drop the `--` from the test script so
+  the check reflects what `nd-status` actually runs, and add a leading-`-` case;
+  (c) report it and leave both as they are.
+- **Status:** open
+- **Resolution:** (c) for now, because `packages/nd-status.nix` is owned by
+  another agent working concurrently and (b) would land a red check against a
+  defect this change cannot fix. The one-character fix is to add `--` before
+  `"$ere"` at both call sites; once that lands, add
+  `{ g = "-foo/**"; s = "-foo/x"; want = true; }` to `matches` in
+  `tests/glob.nix` and drop nothing else — the case is already correct against
+  `builtins.match`.
