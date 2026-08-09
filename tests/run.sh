@@ -15,11 +15,13 @@ set -uo pipefail
 
 ND_SWITCH="${ND_SWITCH:-}"
 ND_SAVE="${ND_SAVE:-}"
+ND_STATUS="${ND_STATUS:-}"
 
-if [ -z "$ND_SWITCH" ] || [ -z "$ND_SAVE" ]; then
+if [ -z "$ND_SWITCH" ] || [ -z "$ND_SAVE" ] || [ -z "$ND_STATUS" ]; then
   root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
   ND_SWITCH="$(nix build --no-link --print-out-paths "$root#nd-switch")/bin/nd-switch"
   ND_SAVE="$(nix build --no-link --print-out-paths "$root#nd-save")/bin/nd-save"
+  ND_STATUS="$(nix build --no-link --print-out-paths "$root#nd-status")/bin/nd-status"
 fi
 
 pass=0
@@ -81,6 +83,7 @@ drift() { printf 'setting = 2\n' > "$1/home/.config/app/config.toml"; }
 
 run_switch() { HOME="$1/home" ND_FLAKE="$1/repo" "$ND_SWITCH" "${@:2}" 2>&1; }
 run_save() { HOME="$1/home" ND_FLAKE="$1/repo" "$ND_SAVE" "${@:2}" 2>&1; }
+run_status() { HOME="$1/home" "$ND_STATUS" "${@:2}" 2>&1; }
 
 echo "nd-switch"
 
@@ -178,6 +181,39 @@ for secret in \
   check_empty "repo working tree is untouched" "$(git -C "$d/repo" status --porcelain)"
   rm -rf "$d"
 done
+
+echo "nd-status"
+
+d=$(new_fixture)
+out=$(run_status "$d")
+check_empty "clean fixture reports nothing" "$out"
+rm -rf "$d"
+
+d=$(new_fixture)
+drift "$d"
+out=$(run_status "$d")
+check "drifted is classified" "drifted	.config/app/config.toml	files/config.toml" "$out"
+rm -rf "$d"
+
+d=$(new_fixture)
+rm "$d/home/.config/app/config.toml"
+out=$(run_status "$d")
+check "a deleted file is missing, not drifted" "missing	.config/app/config.toml	files/config.toml" "$out"
+check_not "a deleted file is not drift" "drifted" "$out"
+rm -rf "$d"
+
+d=$(new_fixture)
+out=$(HOME="$d/home" ND_MANIFEST="$d/nope" "$ND_STATUS" 2>&1); st=$?
+check "missing manifest is reported" "no manifest" "$out"
+check_status "missing manifest exits 1" 1 "$st"
+rm -rf "$d"
+
+# Findings are not an error condition. Callers decide what a finding means.
+d=$(new_fixture)
+drift "$d"
+HOME="$d/home" "$ND_STATUS" > /dev/null 2>&1; st=$?
+check_status "findings still exit 0" 0 "$st"
+rm -rf "$d"
 
 echo
 echo "passed $pass, failed $fail"
