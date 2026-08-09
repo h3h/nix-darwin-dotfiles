@@ -306,17 +306,8 @@ in
 
     programs.zsh.initContent = mkIf cfg.enableZshIntegration (
       lib.mkAfter ''
-        () {
-          emulate -L zsh
-          local manifest="$HOME/${cfg.manifestPath}"
-          [[ -f $manifest ]] || return
-          local src dest rest n=0
-          while IFS=$'\t' read -r src dest rest; do
-            [[ -n $dest && -e $HOME/$dest ]] || continue
-            cmp -s "$src" "$HOME/$dest" || (( n++ ))
-          done < $manifest
-          (( n > 0 )) && print -P "%F{yellow}nd:%f $n config file(s) drifted — run %B nd-save %b to audit and commit"
-        }
+        source ${./nd-notice.zsh}
+        nd_notice
       ''
     );
   };

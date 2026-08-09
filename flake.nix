@@ -44,15 +44,24 @@
           inherit (pkgs.stdenv.hostPlatform) system;
         in
         {
-          tests = pkgs.runCommand "nd-tests" { nativeBuildInputs = [ pkgs.git ]; } ''
-            export HOME="$TMPDIR/home"
-            export ND_SWITCH="${self.packages.${system}.nd-switch}/bin/nd-switch"
-            export ND_SAVE="${self.packages.${system}.nd-save}/bin/nd-save"
-            export ND_STATUS="${self.packages.${system}.nd-status}/bin/nd-status"
-            mkdir -p "$HOME"
-            bash ${./tests/run.sh}
-            touch $out
-          '';
+          tests =
+            pkgs.runCommand "nd-tests"
+              {
+                nativeBuildInputs = [
+                  pkgs.git
+                  pkgs.zsh
+                ];
+              }
+              ''
+                export HOME="$TMPDIR/home"
+                export ND_SWITCH="${self.packages.${system}.nd-switch}/bin/nd-switch"
+                export ND_SAVE="${self.packages.${system}.nd-save}/bin/nd-save"
+                export ND_STATUS="${self.packages.${system}.nd-status}/bin/nd-status"
+                export ND_NOTICE="${./modules/nd-notice.zsh}"
+                mkdir -p "$HOME"
+                bash ${./tests/run.sh}
+                touch $out
+              '';
 
           glob =
             let

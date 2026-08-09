@@ -24,6 +24,13 @@ if [ -z "$ND_SWITCH" ] || [ -z "$ND_SAVE" ] || [ -z "$ND_STATUS" ]; then
   ND_STATUS="$(nix build --no-link --print-out-paths "$root#nd-status")/bin/nd-status"
 fi
 
+# The zsh notice is a plain file in the repo rather than a built package, so the
+# fallback is a path, not a build. The flake check exports it from the store.
+ND_NOTICE="${ND_NOTICE:-}"
+if [ -z "$ND_NOTICE" ]; then
+  ND_NOTICE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/modules/nd-notice.zsh"
+fi
+
 pass=0
 fail=0
 
@@ -575,6 +582,44 @@ rm -rf "$d/home/.config/nv"
 out=$(run_status "$d"); st=$?
 check_status "an absent glob root exits 0" 0 "$st"
 check "an absent glob root reports its files missing" "missing	.config/nv/init.lua" "$out"
+rm -rf "$d"
+
+echo
+echo "zsh notice"
+
+run_notice() {
+  HOME="$1/home" PATH="$(dirname "$ND_STATUS"):$PATH" \
+    zsh -f -c "source '$ND_NOTICE'; nd_notice" 2>&1
+}
+
+d=$(new_fixture)
+out=$(run_notice "$d")
+check_empty "a clean tree prints nothing" "$out"
+rm -rf "$d"
+
+d=$(new_fixture)
+drift "$d"
+out=$(run_notice "$d")
+check "drift is announced" "1 drifted" "$out"
+check "the notice points at nd-save" "nd-save" "$out"
+rm -rf "$d"
+
+d=$(new_fixture)
+rm "$d/home/.config/app/config.toml"
+out=$(run_notice "$d")
+check "a missing file is announced" "1 missing" "$out"
+rm -rf "$d"
+
+d=$(new_glob_fixture)
+printf '{}\n' > "$d/home/.config/nv/lazy-lock.json"
+out=$(run_notice "$d")
+check "a new file is announced" "1 new" "$out"
+rm -rf "$d"
+
+d=$(new_fixture)
+out=$(HOME="$d/home" ND_MANIFEST="$d/nope" PATH="$(dirname "$ND_STATUS"):$PATH" \
+  zsh -f -c "source '$ND_NOTICE'; nd_notice" 2>&1)
+check_empty "no manifest prints nothing" "$out"
 rm -rf "$d"
 
 echo
