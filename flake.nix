@@ -48,6 +48,18 @@
             bash ${./tests/run.sh}
             touch $out
           '';
+
+          glob =
+            let
+              r = import ./tests/glob.nix { inherit (pkgs) lib; };
+            in
+            if r.ok then
+              pkgs.runCommand "nd-glob-tests" { } "touch $out"
+            else
+              throw ''
+                globToERE translation failures: ${builtins.toJSON r.translationFailures}
+                globToERE match failures: ${builtins.toJSON r.matchFailures}
+              '';
         }
       );
 
