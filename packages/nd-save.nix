@@ -293,9 +293,31 @@ writeShellApplication {
     # --intent-to-add makes a newly captured file visible to `diff HEAD`, which
     # otherwise shows nothing for an untracked path, and makes it a pathspec
     # `commit --only` will accept.
+    #
+    # It also mutates the index before the user has agreed to anything, and an
+    # intent-to-add entry left behind is not harmless: a later `git commit -am`
+    # of the user's own sweeps the file in, which is defect 1's failure coming
+    # back through a different door. So record which paths git did not already
+    # know, and undo exactly those on any exit that does not commit. Exactly
+    # those: resetting a path that was already tracked would silently discard
+    # staging the user did themselves.
+    untracked=()
+    for p in "''${paths[@]}"; do
+      if ! git -C "$flake" ls-files --error-unmatch -- "$p" > /dev/null 2>&1; then
+        untracked+=("$p")
+      fi
+    done
+
+    unstage_captures() {
+      if [ "''${#untracked[@]}" -gt 0 ]; then
+        git -C "$flake" reset -q -- "''${untracked[@]}"
+      fi
+    }
+
     git -C "$flake" add --intent-to-add -- "''${paths[@]}"
 
     if [ -z "$(git -C "$flake" status --porcelain -- "''${paths[@]}")" ]; then
+      unstage_captures
       echo "nd-save: copies are identical to the committed versions, nothing to commit"
       exit 0
     fi
@@ -312,7 +334,9 @@ writeShellApplication {
       case "$reply" in
         y | Y) ;;
         *)
-          echo "nd-save: aborted. Files were copied into the repo but nothing was committed."
+          unstage_captures
+          echo "nd-save: aborted. Files were copied into the repo but nothing was"
+          echo "nd-save: committed, and the index is as you left it."
           exit 1
           ;;
       esac

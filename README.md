@@ -259,7 +259,7 @@ $ nix flake check          # runs the suite in a sandbox
 $ bash tests/run.sh        # or directly
 ```
 
-128 cases covering argument parsing; drift, missing and new classification; the
+133 cases covering argument parsing; drift, missing and new classification; the
 gate and its override; flag ordering; copy-back; commit scoping and contents;
 the branch guard and detached HEAD; the unplaced-repo-edit refusal and
 `--force`; derived commit subjects; credential refusal and the benign shapes

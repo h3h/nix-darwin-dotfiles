@@ -289,6 +289,38 @@ check_status "declining exits 1" 1 "$st"
 check "declining leaves the commit unmade" "initial" "$(git -C "$d/repo" log -1 --format=%s)"
 rm -rf "$d"
 
+# Declining must leave the index exactly as it was. nd-save runs
+# `git add --intent-to-add` before the prompt, so the preview can show a newly
+# captured file; an intent-to-add entry left behind after a refusal is swept
+# into the user's next `git commit -am`, which is defect 1's failure arriving
+# through a different door.
+d=$(new_glob_fixture)
+printf '{"plug":"abc"}\n' > "$d/home/.config/nv/lazy-lock.json"
+out=$(printf 'n\n' | HOME="$d/home" ND_FLAKE="$d/repo" "$ND_SAVE" 2>&1)
+check "declining a new capture aborts" "aborted" "$out"
+# An intent-to-add entry does not show in `diff --cached`, so ask the index
+# directly whether it knows the path at all.
+check_empty "declining leaves the capture out of the index" \
+  "$(git -C "$d/repo" ls-files -- files/nv/lazy-lock.json)"
+# The user's own later commit must not pick the capture up.
+printf 'return 9\n' > "$d/repo/files/nv/init.lua"
+git -C "$d/repo" commit -qam "my own unrelated commit"
+check_not "the declined capture stays out of the user's commit" "lazy-lock.json" \
+  "$(git -C "$d/repo" show --stat --format= HEAD)"
+rm -rf "$d"
+
+# Declining must NOT unstage work the user staged themselves, including on a
+# managed path: only paths git did not already know are reset.
+d=$(new_fixture)
+printf 'staged by me\n' > "$d/repo/files/config.toml"
+git -C "$d/repo" add files/config.toml
+drift "$d"
+out=$(printf 'n\n' | HOME="$d/home" ND_FLAKE="$d/repo" "$ND_SAVE" --force 2>&1)
+check "declining with a tracked managed path aborts" "aborted" "$out"
+check "the user's own staging of a tracked path survives" "files/config.toml" \
+  "$(git -C "$d/repo" diff --cached --name-only)"
+rm -rf "$d"
+
 # Credentials must stop the copy, not merely the commit: a secret copied into
 # the working tree and then refused is a secret waiting to be committed later.
 for secret in \

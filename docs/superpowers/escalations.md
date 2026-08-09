@@ -178,3 +178,37 @@ recorded), `unresolved` (escalated and still undecided at hand-off).
   `manifestText` emits `-`), to the spec's Manifest v2 section, and to the three
   `new_glob_fixture` manifest lines in `tests/run.sh`. No change to
   `packages/nd-status.nix` or `packages/nd-save.nix`, neither of which reads it.
+
+## E8 — declining `nd-save` left an intent-to-add entry in the index
+- **Task:** final review (regression introduced by Task 5's own fix)
+- **Raised:** Task 5 added `git add --intent-to-add -- "${paths[@]}"` before the
+  confirmation prompt, so that `git diff HEAD --` can show a newly captured file
+  that git does not yet track. It mutates the index before the user has agreed
+  to anything, and nothing undid it on refusal. Reproduced in a scratch repo:
+  after `git add -N created.txt`, a later `git commit -am "unrelated"` of the
+  user's own commits `created.txt` along with their work. Confirmed against the
+  real binary — the test `the declined capture stays out of the user's commit`
+  failed against the unfixed `nd-save` and passes against the fixed one.
+
+  This is defect 1's failure — application-written config landing in a commit
+  that is about something else — arriving through a door the fix for defect 1
+  opened.
+- **Options:** (a) move the intent-to-add after the prompt, losing the preview
+  of new files, which is the only reason it exists; (b) `git reset -- <paths>`
+  on refusal, which would also discard staging the user did themselves on a
+  managed path; (c) record which paths git did not already know, and reset
+  exactly those; (d) leave it and say so in the abort message.
+- **Status:** resolved
+- **Resolution:** (c). Before the intent-to-add, `git ls-files --error-unmatch`
+  partitions `paths` into tracked and untracked; `unstage_captures` resets only
+  the untracked ones and runs on both non-committing exits (refusal, and
+  "nothing to commit"). The abort message now says the index is as the user left
+  it. Two tests pin it: a declined capture stays out of the index and out of the
+  user's next commit, and a user's own staging of a *tracked* managed path
+  survives a refusal untouched.
+
+  Method note: the first version of the index assertion used
+  `git diff --cached --name-only`, which does not show intent-to-add entries and
+  so passed against the unfixed binary. Replaced with `git ls-files -- <path>`,
+  which asks the index directly. Both assertions were then confirmed red against
+  the unfixed `nd-save` before the fix was restored.
