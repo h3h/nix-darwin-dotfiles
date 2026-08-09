@@ -142,6 +142,17 @@ One translator, two anchoring mechanisms that mean the same thing. The
 alternative — a Nix matcher for evaluation and a shell matcher for runtime —
 is two implementations of the same grammar that will disagree eventually.
 
+**One translator is not the same as one regex dialect,** which this design
+originally conflated. `builtins.match` is std::regex and `grep -qxE` is GNU
+ERE, and they do not accept the same escapes — `\]` is fine to one and fatal to
+the other. So "agree by construction" has to be *tested*, not asserted:
+`tests/glob-engines.sh` replays every case through `grep -qxE` and compares
+against the verdict `builtins.match` gave the same ERE at evaluation time,
+failing on disagreement, on grep rejecting the ERE, and on both engines
+agreeing on the wrong answer. Without that check the escape-table defect above
+shipped green, because the only list that called a matcher never contained an
+escaped metacharacter.
+
 The manifest therefore carries the ERE, not the source glob. The cost is that
 the manifest is less legible and test fixtures write regexes; `globToERE` is
 exported so tests can compare against it rather than transcribing by hand.
@@ -153,8 +164,21 @@ Ordered, because the steps are not commutative:
 1. Replace `**/` with the sentinel `@@ND_GS@@`.
 2. Replace `/**` with the sentinel `@@ND_GSTAIL@@`.
 3. Collapse any remaining `**` to `*`.
-4. Escape ERE metacharacters: `\` first, then `.` `+` `(` `)` `[` `]` `{` `}`
+4. Escape ERE metacharacters: `\` first, then `.` `+` `(` `)` `[` `{` `}`
    `^` `$` `|`. Not `*` or `?`, which are handled next.
+
+   **Corrected during implementation.** This step originally also listed `]`.
+   That is wrong and was a real defect: `]` outside a bracket expression is an
+   *ordinary* character in POSIX, so `\]` is undefined-behaviour escaping. GNU
+   grep tolerates it; `builtins.match` rejects it outright, so any pattern
+   containing `]` aborted evaluation of the user's whole home-manager config —
+   the case the option's own documentation promises is "matched literally". `-`
+   is absent for the same reason and must stay absent. Correctness does not rest
+   on escaping `]`: `[` *is* escaped, so no bracket expression can ever open, so
+   every `]` in the output is already literal to both engines. `}` is not
+   symmetric and does stay escaped: it is interval syntax, POSIX leaves a stray
+   one undefined, and both engines accept `\}`. See escalation E9 for the
+   character-by-character probe of both engines.
 5. Replace `*` with `[^/]*` and `?` with `[^/]`.
 6. Expand `@@ND_GS@@` to `(.*/)?` and `@@ND_GSTAIL@@` to `/.*`.
 
