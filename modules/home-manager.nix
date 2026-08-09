@@ -14,6 +14,52 @@ let
     mkIf
     types
     ;
+
+  globLib = import ../lib/glob.nix { inherit lib; };
+
+  # A glob entry contributes ordinary file records for everything that matches
+  # in the repo right now, plus one glob record per pattern so nd-status can
+  # recognise files the application creates later. Placement and drift detection
+  # are therefore byte-for-byte the same code path as a declared file; globs add
+  # discovery of files that do not exist yet, and nothing else.
+  globFileRecords =
+    destRoot: g:
+    let
+      root = cfg.sourceDir + "/${g.source}";
+      eres = map globLib.globToERE g.patterns;
+      relOf = p: lib.removePrefix "${toString root}/" (toString p);
+    in
+    map (p: {
+      dest = "${destRoot}/${relOf p}";
+      src = p;
+      repoRel = "${cfg.repoSubdir}/${g.source}/${relOf p}";
+    }) (lib.filter (p: globLib.matchesAny eres (relOf p)) (lib.filesystem.listFilesRecursive root));
+
+  globPatternRecords =
+    destRoot: g:
+    map (p: {
+      srcRoot = cfg.sourceDir + "/${g.source}";
+      inherit destRoot;
+      repoRoot = "${cfg.repoSubdir}/${g.source}";
+      ere = globLib.globToERE p;
+    }) g.patterns;
+
+  fileRecords =
+    lib.mapAttrsToList (dest: rel: {
+      inherit dest;
+      src = cfg.sourceDir + "/${rel}";
+      repoRel = "${cfg.repoSubdir}/${rel}";
+    }) cfg.files
+    ++ lib.concatLists (lib.mapAttrsToList globFileRecords cfg.globs);
+
+  patternRecords = lib.concatLists (lib.mapAttrsToList globPatternRecords cfg.globs);
+
+  # Field 4 is the record kind; absent means "file", so the three-field lines a
+  # previous generation wrote keep parsing.
+  manifestText = lib.concatStrings (
+    map (f: "${f.src}\t${f.dest}\t${f.repoRel}\n") fileRecords
+    ++ map (g: "${g.srcRoot}\t${g.destRoot}\t${g.repoRoot}\tglob\t${g.ere}\n") patternRecords
+  );
 in
 {
   options.programs.nd = {
@@ -66,6 +112,62 @@ in
       '';
     };
 
+    globs = mkOption {
+      type = types.attrsOf (
+        types.submodule {
+          options = {
+            source = mkOption {
+              type = types.str;
+              example = "nvim";
+              description = "Directory holding the matching files, relative to {option}`sourceDir`.";
+            };
+            patterns = mkOption {
+              type = types.listOf types.str;
+              example = [
+                "init.lua"
+                "lua/**/*.lua"
+                "lazy-lock.json"
+              ];
+              description = ''
+                Glob patterns, relative to both {option}`source` and the
+                destination root. Required: there is deliberately no default,
+                because a default of `[ "**" ]` would be whole-directory
+                tracking wearing a glob's clothes.
+
+                Supported syntax is `**/` (zero or more directories), a trailing
+                `/**` (everything below), `*` (within one component) and `?`.
+                Bracket expressions and brace expansion are not supported and
+                match literally.
+              '';
+            };
+          };
+        }
+      );
+      default = { };
+      example = lib.literalExpression ''
+        {
+          ".config/nvim" = {
+            source = "nvim";
+            patterns = [ "init.lua" "lua/**/*.lua" "lazy-lock.json" ];
+          };
+        }
+      '';
+      description = ''
+        Managed file *sets*, keyed by destination root relative to `$HOME`.
+
+        Everything matching is placed exactly as {option}`files` entries are. In
+        addition, a file that appears under the destination root later and
+        matches a pattern — the canonical case being lazy.nvim rewriting
+        `lazy-lock.json` on every plugin update — is reported by `nd-status` as
+        new and captured by `nd-save`, after which the next evaluation places it
+        like any other managed file.
+
+        Only what a pattern names is ever captured. This is an allowlist on
+        purpose: a managed *directory* would need an ignore list maintained
+        against an application you do not control.
+      '';
+    };
+
     manifestPath = mkOption {
       type = types.str;
       default = ".local/state/nd/manifest";
@@ -94,10 +196,23 @@ in
   config = mkIf cfg.enable {
     assertions = [
       {
-        assertion = cfg.files == { } || cfg.repoSubdir != "";
-        message = "programs.nd.repoSubdir must be set when programs.nd.files is non-empty.";
+        assertion = (cfg.files == { } && cfg.globs == { }) || cfg.repoSubdir != "";
+        message = "programs.nd.repoSubdir must be set when programs.nd.files or programs.nd.globs is non-empty.";
       }
-    ];
+    ]
+    # lib.filesystem.listFilesRecursive on a missing path throws an evaluation
+    # error whose message does not name the option that caused it.
+    ++ lib.mapAttrsToList (destRoot: g: {
+      assertion = builtins.pathExists (cfg.sourceDir + "/${g.source}");
+      message = "programs.nd.globs.\"${destRoot}\".source = \"${g.source}\" does not exist under programs.nd.sourceDir.";
+    }) cfg.globs
+    # An empty match set is not an error — a pattern that matches nothing today
+    # but will match lazy-lock.json tomorrow is the expected state on a fresh
+    # machine. An empty pattern list is, because it can never match anything.
+    ++ lib.mapAttrsToList (destRoot: g: {
+      assertion = g.patterns != [ ];
+      message = "programs.nd.globs.\"${destRoot}\".patterns is empty, so the entry places and captures nothing.";
+    }) cfg.globs;
 
     home.packages = mkIf cfg.installPackages [
       self.packages.${pkgs.stdenv.hostPlatform.system}.nd-switch
@@ -109,22 +224,37 @@ in
     # A pre-existing symlink is removed first. Without that, `install` writes
     # *through* an old out-of-store symlink straight back into the repo, which
     # silently preserves the exact behaviour this module replaces.
+    #
+    # 0644 is deliberate. The position the credential scan in nd-save enforces is
+    # that no credential belongs in a managed file; if that holds, 0644 is
+    # correct. A per-file mode option would not survive the repo round-trip in
+    # any case, because git records only the executable bit. Closed as wontfix,
+    # not overlooked.
     home.activation.ndPlaceManagedConfigs = lib.hm.dag.entryAfter [ "writeBoundary" ] ''
       manifest="$HOME/${cfg.manifestPath}"
       run mkdir -p "$(dirname "$manifest")"
-      tmp="$manifest.new"
-      : > "$tmp"
 
-      ${lib.concatStringsSep "\n" (
-        lib.mapAttrsToList (dest: rel: ''
-          run mkdir -p "$(dirname "$HOME/${dest}")"
-          [ -L "$HOME/${dest}" ] && run rm -f "$HOME/${dest}"
-          run install -m 0644 ${cfg.sourceDir + "/${rel}"} "$HOME/${dest}"
-          printf '%s\t%s\t%s\n' "${cfg.sourceDir + "/${rel}"}" "${dest}" "${cfg.repoSubdir}/${rel}" >> "$tmp"
-        '') cfg.files
-      )}
+      ${lib.concatMapStringsSep "\n" (f: ''
+        run mkdir -p "$(dirname "$HOME/${f.dest}")"
+        if [ -L "$HOME/${f.dest}" ]; then
+          run rm -f "$HOME/${f.dest}"
+        fi
+        run install -m 0644 ${f.src} "$HOME/${f.dest}"
+      '') fileRecords}
 
-      run mv "$tmp" "$manifest"
+      # Built in one variable and written once, so a dry run writes nothing at
+      # all. Previously the scratch file was truncated and appended to directly
+      # while only the final `mv` went through `run`, so a dry run left an
+      # orphaned manifest.new behind. `run` keys off DRY_RUN, not the deprecated
+      # DRY_RUN_CMD.
+      ndManifest=${lib.escapeShellArg manifestText}
+
+      if [[ -v DRY_RUN ]]; then
+        echo "nd: would write manifest to $manifest"
+      else
+        printf '%s' "$ndManifest" > "$manifest.new"
+        mv "$manifest.new" "$manifest"
+      fi
     '';
 
     programs.zsh.initContent = mkIf cfg.enableZshIntegration (
