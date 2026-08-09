@@ -91,6 +91,10 @@ new_fixture() {
 #
 # The ERE in the manifest is what globToERE produces for "**/*.lua" — the
 # manifest carries regexes, not globs, so the shell never parses a glob.
+#
+# Field 1 of a glob record is "-", matching what the module writes: no reader
+# uses it, and putting a real store path there would copy the source subtree
+# into the store a second time for nothing.
 new_glob_fixture() {
   local d
   d="$(mktemp -d)"
@@ -110,8 +114,8 @@ new_glob_fixture() {
   {
     printf '%s\t%s\t%s\n' "$d/store/init.lua"     ".config/nv/init.lua"     "files/nv/init.lua"
     printf '%s\t%s\t%s\n' "$d/store/lua/plug.lua" ".config/nv/lua/plug.lua" "files/nv/lua/plug.lua"
-    printf '%s\t%s\t%s\t%s\t%s\n' "$d/store" ".config/nv" "files/nv" "glob" '(.*/)?[^/]*\.lua'
-    printf '%s\t%s\t%s\t%s\t%s\n' "$d/store" ".config/nv" "files/nv" "glob" 'lazy-lock\.json'
+    printf '%s\t%s\t%s\t%s\t%s\n' "-" ".config/nv" "files/nv" "glob" '(.*/)?[^/]*\.lua'
+    printf '%s\t%s\t%s\t%s\t%s\n' "-" ".config/nv" "files/nv" "glob" 'lazy-lock\.json'
   } > "$d/home/.local/state/nd/manifest"
 
   git -C "$d/repo" init -q -b main
@@ -552,7 +556,7 @@ rm -rf "$d"
 
 # Two patterns could both match one file. It must be reported once.
 d=$(new_glob_fixture)
-printf '%s\t%s\t%s\t%s\t%s\n' "$d/store" ".config/nv" "files/nv" "glob" '(.*/)?extra\.lua' \
+printf '%s\t%s\t%s\t%s\t%s\n' "-" ".config/nv" "files/nv" "glob" '(.*/)?extra\.lua' \
   >> "$d/home/.local/state/nd/manifest"
 printf 'return 3\n' > "$d/home/.config/nv/lua/extra.lua"
 out=$(run_status "$d" | grep -c 'extra.lua')

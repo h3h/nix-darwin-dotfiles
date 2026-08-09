@@ -68,9 +68,18 @@ current meaning, so a new tool reading a manifest written by an older generation
 works without a migration.
 
 ```
-<store src>	<dest>	<repo_rel>                          # placed file (3 fields)
-<store root>	<dest root>	<repo root>	glob	<ERE>     # glob root (5 fields)
+<store src>	<dest>	<repo_rel>                     # placed file (3 fields)
+-	<dest root>	<repo root>	glob	<ERE>         # glob root (5 fields)
 ```
+
+Field 1 of a glob record is a literal `-`. Nothing reads it: `nd-status` scans a
+glob root with the destination root, the repo root and the ERE, and every file a
+pattern matches already carries its own store source in its own file record.
+Interpolating the source root there would copy the whole subtree into the store
+a second time, on top of the per-file copies — and would not even be accurate,
+since the subtree contains files no pattern matched. The column is kept rather
+than dropped so `read -r src dest repo_rel kind pattern` stays a single parse for
+both record kinds.
 
 All readers use `read -r src dest repo_rel kind pattern`. On a three-field line
 `kind` and `pattern` are empty, which is the file case.

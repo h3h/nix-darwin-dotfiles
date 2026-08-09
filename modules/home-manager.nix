@@ -38,7 +38,6 @@ let
   globPatternRecords =
     destRoot: g:
     map (p: {
-      srcRoot = cfg.sourceDir + "/${g.source}";
       inherit destRoot;
       repoRoot = "${cfg.repoSubdir}/${g.source}";
       ere = globLib.globToERE p;
@@ -56,9 +55,17 @@ let
 
   # Field 4 is the record kind; absent means "file", so the three-field lines a
   # previous generation wrote keep parsing.
+  #
+  # Field 1 of a glob record is a "-" placeholder. No reader uses it: nd-status
+  # scans with the destination root, the repo root and the ERE only, and every
+  # file a pattern matches already has its own file record carrying its store
+  # source. Interpolating the source root here would copy the whole subtree into
+  # the store a second time, on top of the per-file copies, for a field nothing
+  # reads — and it would not even be accurate, because the subtree contains
+  # files no pattern matched.
   manifestText = lib.concatStrings (
     map (f: "${f.src}\t${f.dest}\t${f.repoRel}\n") fileRecords
-    ++ map (g: "${g.srcRoot}\t${g.destRoot}\t${g.repoRoot}\tglob\t${g.ere}\n") patternRecords
+    ++ map (g: "-\t${g.destRoot}\t${g.repoRoot}\tglob\t${g.ere}\n") patternRecords
   );
 
   # The declared options have to reach the binaries. Without this, flakePath and

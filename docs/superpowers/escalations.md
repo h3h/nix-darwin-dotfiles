@@ -125,3 +125,56 @@ recorded), `unresolved` (escalated and still undecided at hand-off).
   says so itself, since the live file is byte-identical to the store and both
   the old and new `nd-save` stop at "nothing to save" — so with the subject
   corrected it passes before and after, which is the intended shape.
+
+## E6 — `repoSubdir` has no default, so its assertion looked unreachable
+- **Task:** 9 (raised by the implementing agent, adjudicated separately)
+- **Raised:** `programs.nd.repoSubdir` is `types.str` with no default, so a
+  config that sets `files` or `globs` but omits `repoSubdir` dies with nixpkgs'
+  generic "The option 'programs.nd.repoSubdir' was accessed but has no value
+  defined" before the module's friendly assertion can fire. Pre-existing, not
+  introduced by this work.
+- **Options:** (a) add `default = ""` so the assertion fires and the user sees
+  the specific message; (b) leave it.
+- **Status:** resolved
+- **Resolution:** (b), leave it. Escalated to Fable for judgment. Three reasons.
+  "No default" is the type-level statement of "required" and is the stronger
+  mechanism; `default = ""` would make a required option render as optional in
+  the generated docs, demoting a type-level guarantee to a runtime assertion.
+  The generic nixpkgs error already names the option, which is the exact
+  standard the neighbouring `pathExists` assertion was justified by — that one
+  exists because `listFilesRecursive`'s error does *not* name the option. And
+  the assertion is not dead: `types.str` cannot forbid `""`, and
+  `repoSubdir = ""` is a plausible mistake for someone whose `sourceDir` sits at
+  the flake root, which would silently produce repo paths with a leading `/`.
+  Omission is caught by the type system, the empty string by the assertion. The
+  division of labour is coherent, not accidental.
+
+## E7 — every glob root dragged a redundant copy of its source subtree into the store
+- **Task:** 9 (raised by the implementing agent, adjudicated separately)
+- **Raised:** Field 1 of a glob manifest record was built as
+  `cfg.sourceDir + "/${g.source}"`. Because that is an unrooted source path,
+  Nix copies the entire subtree into the store as its own store path, on top of
+  the per-file copies the file records already make. Observed as
+  `/nix/store/9fi2f…-nv`. No reader uses the field: `nd-status` passes fields 2,
+  3 and 5 to `scan_glob` and drops field 1, and `nd-save`'s blocker check reads
+  field 1 of *file* records only (`awk '$4 == ""'`).
+- **Options:** (a) leave it, for format symmetry and possible future use;
+  (b) emit a literal `-` placeholder, documented as unused; (c) emit
+  `toString (...)`, avoiding the copy but yielding a build-machine path with no
+  liveness guarantee on the target; (d) find a genuinely useful payload.
+- **Status:** resolved
+- **Resolution:** (b). Escalated to Fable for judgment. Every hypothetical future
+  use reduces to a per-file question — "did this placed file's source vanish",
+  "what did this generation place under the root" — and the file records already
+  answer all of them, each carrying its own store source. The symmetry argument
+  is also inaccurate: the copied subtree contains files no pattern matched, so
+  field 1 was never "the store source of this record" in any meaningful sense.
+  (c) is worse than either, being a field that looks usable and is not. (d) has
+  no candidate payload, and shrinking glob records to four fields would shift
+  `kind` out of column 4 and break the single `read -r src dest repo_rel kind
+  pattern` parse that both record kinds share.
+
+  Applied to `modules/home-manager.nix` (`globPatternRecords` drops `srcRoot`;
+  `manifestText` emits `-`), to the spec's Manifest v2 section, and to the three
+  `new_glob_fixture` manifest lines in `tests/run.sh`. No change to
+  `packages/nd-status.nix` or `packages/nd-save.nix`, neither of which reads it.
