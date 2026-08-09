@@ -1,4 +1,10 @@
-{ writeShellApplication, coreutils }:
+{
+  writeShellApplication,
+  coreutils,
+  gnused,
+  gnugrep,
+  nd-status,
+}:
 
 # nd-switch — build, then switch, this host's nix-darwin configuration.
 #
@@ -7,7 +13,12 @@
 # because a switch would copy over it.
 writeShellApplication {
   name = "nd-switch";
-  runtimeInputs = [ coreutils ];
+  runtimeInputs = [
+    coreutils
+    gnused
+    gnugrep
+    nd-status
+  ];
   text = ''
     flake="''${ND_FLAKE:-$HOME/.config/nix-darwin}"
     host="''${ND_HOST:-$(/bin/hostname -s)}"
@@ -102,23 +113,34 @@ writeShellApplication {
     # against the store path the current generation installed, not against the
     # repo: comparing to the repo cannot tell "the app changed this file" from
     # "I edited the repo and want to place it", and would refuse exactly the
-    # switch you meant to run.
-    if [ -z "$allow_dirty" ] && [ -f "$manifest" ]; then
-      drifted=""
-      while IFS="$(printf '\t')" read -r src dest _repo_rel; do
-        [ -n "''${dest:-}" ] || continue
-        [ -e "$HOME/$dest" ] || continue
-        if ! cmp -s "$src" "$HOME/$dest"; then
-          drifted="$drifted$dest
-    "
-        fi
-      done < "$manifest"
+    # switch you meant to run. nd-status owns that comparison.
+    #
+    # Only `drifted` blocks. A `missing` file will be restored by the switch and
+    # a `new` file has no store source to be overwritten by, so neither has
+    # anything for the gate to protect — but both are reported, because
+    # restoring a file somebody deleted on purpose without saying so is the
+    # behaviour defect 6 is about.
+    if [ -f "$manifest" ]; then
+      status="$(nd-status)"
 
-      if [ -n "$drifted" ]; then
+      drifted="$(printf '%s\n' "$status" | grep '^drifted' | cut -f2 || true)"
+      missing="$(printf '%s\n' "$status" | grep '^missing' | cut -f2 || true)"
+      created="$(printf '%s\n' "$status" | grep '^new' | cut -f2 || true)"
+
+      if [ -n "$missing" ]; then
+        echo "nd-switch: these managed files are gone and will be restored:" >&2
+        printf '%s\n' "$missing" | sed 's/^/  /' >&2
+      fi
+
+      if [ -n "$created" ]; then
+        echo "nd-switch: these files are not yet in the repo:" >&2
+        printf '%s\n' "$created" | sed 's/^/  /' >&2
+        echo "nd-switch: run 'nd-save' to capture them." >&2
+      fi
+
+      if [ -z "$allow_dirty" ] && [ -n "$drifted" ]; then
         echo "nd-switch: these files changed since they were placed:" >&2
-        printf '%s' "$drifted" | while IFS= read -r line; do
-          [ -n "$line" ] && printf '  %s\n' "$line" >&2
-        done
+        printf '%s\n' "$drifted" | sed 's/^/  /' >&2
         echo "nd-switch: switching would overwrite them." >&2
         echo "nd-switch: run 'nd-save' to copy them back and commit, or --allow-dirty to discard" >&2
         exit 1

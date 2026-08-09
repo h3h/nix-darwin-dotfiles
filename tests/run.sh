@@ -154,6 +154,35 @@ out=$(run_switch "$d" --build --allow-dirty)
 check_not "--allow-dirty skips the gate" "changed since they were placed" "$out"
 rm -rf "$d"
 
+# Defect 6. A deletion is not drift and must not block, but it must be said.
+# The fixture's flake.nix is a stub, so nd-switch --build reaches `nix build`
+# and fails there; the assertion is on the absence of the block, not the exit
+# status. Every existing --build case has the same shape.
+d=$(new_fixture)
+rm "$d/home/.config/app/config.toml"
+out=$(run_switch "$d" --build)
+check "a missing file is named" "will be restored" "$out"
+check "a missing file names the path" ".config/app/config.toml" "$out"
+check_not "a missing file does not block" "changed since they were placed" "$out"
+rm -rf "$d"
+
+# A new file cannot be overwritten by a switch — there is nothing in the store
+# to overwrite it with — so the gate has nothing to protect and must not fire.
+d=$(new_glob_fixture)
+printf '{"plug":"abc"}\n' > "$d/home/.config/nv/lazy-lock.json"
+out=$(run_switch "$d" --build)
+check "a new file is named" "not yet in the repo" "$out"
+check "a new file names the path" "lazy-lock.json" "$out"
+check_not "a new file does not block" "changed since they were placed" "$out"
+rm -rf "$d"
+
+# --allow-dirty suppresses the block, not the reports.
+d=$(new_fixture)
+rm "$d/home/.config/app/config.toml"
+out=$(run_switch "$d" --build --allow-dirty)
+check "--allow-dirty still reports missing" "will be restored" "$out"
+rm -rf "$d"
+
 # Flag order must not change behaviour: positional parsing once let
 # `--allow-dirty --build` perform a switch instead of a build.
 d=$(new_fixture)

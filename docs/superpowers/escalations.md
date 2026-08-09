@@ -64,3 +64,31 @@ recorded), `unresolved` (escalated and still undecided at hand-off).
   `.config/zed/settings.json` and `.config/nvim/lua/x.lua` are unaffected.
   No lookup table of application names is introduced, which was the constraint
   the spec actually cared about.
+
+## E4 — `callPackage` does not resolve `nd-status` from the `rec` packages set
+- **Task:** 4
+- **Raised:** The plan (Task 5, Step 3, and by implication Task 4) states
+  "`callPackage` resolves it automatically once `nd-status` is in the same `rec`
+  set — confirm the `packages` attribute set is `rec` (it is)". It is `rec`, and
+  it does not. `nix build --no-link --print-out-paths .#nd-switch` after adding
+  the `nd-status` argument to `packages/nd-switch.nix`:
+
+  ```
+  error: evaluation aborted with the following error message:
+  'lib.customisation.callPackageWith: Function called without required argument
+  "nd-status" at .../packages/nd-switch.nix:6'
+  ```
+
+  `pkgs.callPackage` takes its auto-arguments from `pkgs`, not from the
+  attribute set the call happens to be written inside. `rec` only puts
+  `nd-status` in Nix lexical scope; it does not put it in `callPackage`'s
+  lookup scope.
+- **Options:** (a) pass it explicitly, `pkgs.callPackage ./packages/nd-switch.nix
+  { inherit nd-status; }`; (b) build a scope with `lib.makeScope` /
+  `pkgs.extend` so auto-resolution works as the plan describes.
+- **Status:** resolved
+- **Resolution:** (a). The plan's intent is that `nd-switch` receives the
+  `nd-status` from this flake rather than a second copy; an explicit `inherit`
+  achieves that in one line, and a scope would be new machinery for three
+  packages. Task 5 must do the same for `nd-save` — the plan's claim there is
+  wrong for the same reason.

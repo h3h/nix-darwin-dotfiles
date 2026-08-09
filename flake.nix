@@ -18,9 +18,11 @@
     in
     {
       packages = forAllSystems (pkgs: rec {
-        nd-switch = pkgs.callPackage ./packages/nd-switch.nix { };
-        nd-save = pkgs.callPackage ./packages/nd-save.nix { };
         nd-status = pkgs.callPackage ./packages/nd-status.nix { };
+        # nd-status is passed explicitly: callPackage's auto-args come from
+        # `pkgs`, not from this `rec` set, so being in scope here is not enough.
+        nd-switch = pkgs.callPackage ./packages/nd-switch.nix { inherit nd-status; };
+        nd-save = pkgs.callPackage ./packages/nd-save.nix { };
         default = pkgs.symlinkJoin {
           name = "nd";
           paths = [
