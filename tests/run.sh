@@ -627,5 +627,40 @@ check_empty "no manifest prints nothing" "$out"
 rm -rf "$d"
 
 echo
+echo "end to end"
+
+# lazy.nvim rewrites lazy-lock.json on every plugin update. It is a file the
+# user never declares, whose whole purpose is to be regenerated. Capturing it
+# must land it at the right repo path and leave the repo in a state where the
+# next evaluation enumerates it as an ordinary file record.
+d=$(new_glob_fixture)
+printf '{"nvim-treesitter":{"commit":"abc123"}}\n' > "$d/home/.config/nv/lazy-lock.json"
+
+out=$(run_switch "$d" --build)
+check "the switch reports it without blocking" "not yet in the repo" "$out"
+check_not "the switch is not blocked" "changed since they were placed" "$out"
+
+out=$(run_save "$d" -y)
+check "nd-save captures it" "lazy-lock.json" "$out"
+check "it lands at the right repo path" "abc123" "$(cat "$d/repo/files/nv/lazy-lock.json")"
+check "it is committed" "files/nv/lazy-lock.json" "$(git -C "$d/repo" show --stat --format= HEAD)"
+check "the subject names the app" "Save nv config written by the app" "$(git -C "$d/repo" log -1 --format=%s)"
+
+# It is now in the repo, so the next evaluation places it. Simulate that by
+# adding the file record a switch would write, and confirm it stops being new.
+# Field 1 is the source the next generation would place from; in this fixture
+# that is the repo copy, which is byte-identical to the live file.
+printf '%s\t%s\t%s\n' "$d/repo/files/nv/lazy-lock.json" ".config/nv/lazy-lock.json" "files/nv/lazy-lock.json" \
+  >> "$d/home/.local/state/nd/manifest"
+out=$(run_status "$d")
+check_not "once placed it is no longer new" "new	.config/nv/lazy-lock.json" "$out"
+check_not "and it has not drifted" "drifted" "$out"
+
+# The loop closed: a second save has nothing to do.
+out=$(run_save "$d" -y)
+check "the loop is closed" "nothing to save" "$out"
+rm -rf "$d"
+
+echo
 echo "passed $pass, failed $fail"
 [ "$fail" -eq 0 ]
