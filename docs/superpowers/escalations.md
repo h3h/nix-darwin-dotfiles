@@ -92,3 +92,36 @@ recorded), `unresolved` (escalated and still undecided at hand-off).
   achieves that in one line, and a scope would be new machinery for three
   packages. Task 5 must do the same for `nd-save` — the plan's claim there is
   wrong for the same reason.
+
+## E5 — a Task 5 test asserts a HEAD subject its own fixture has replaced
+- **Task:** 5
+- **Raised:** The plan's third Task 5 case ("an unrelated edit does not make
+  nd-save commit") builds a fixture, then commits on top of it:
+
+  ```bash
+  d=$(new_fixture)                       # HEAD subject is now "initial"
+  printf 'noise\n' > "$d/repo/noise.txt"
+  git -C "$d/repo" add noise.txt
+  git -C "$d/repo" commit -qm "add noise"   # HEAD subject is now "add noise"
+  ...
+  check "no commit was made" "initial" "$(git -C "$d/repo" log -1 --format=%s)"
+  ```
+
+  `git log -1 --format=%s` returns `add noise`, so the assertion fails
+  regardless of whether `nd-save` behaves correctly. It is testing the wrong
+  string, not a real defect. The case's intent — "nd-save added no commit" —
+  is unambiguous from its comment and from the two sibling cases.
+- **Options:** (a) assert the subject the fixture actually leaves at HEAD,
+  `add noise`, keeping the case's intent intact; (b) drop the assertion and
+  keep only the `nothing to save` check, losing the "no new commit" guarantee;
+  (c) restructure the fixture so `initial` stays at HEAD, which means making the
+  unrelated edit untracked and thereby removing the "unrelated committed file
+  with an unstaged edit" condition the case exists to exercise.
+- **Status:** resolved
+- **Resolution:** (a). The assertion's purpose is to prove `nd-save` left HEAD
+  where it found it; naming the commit the fixture actually ends on proves
+  exactly that, and it is the smallest change that makes the case mean what its
+  comment says. The case is a guard rather than a regression test — the plan
+  says so itself, since the live file is byte-identical to the store and both
+  the old and new `nd-save` stop at "nothing to save" — so with the subject
+  corrected it passes before and after, which is the intended shape.

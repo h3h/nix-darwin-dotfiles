@@ -220,7 +220,54 @@ check "drift is copied back" "copied back into the repo" "$out"
 check "drift is committed" "committed" "$out"
 check "repo now holds the new content" "setting = 2" "$(cat "$d/repo/files/config.toml")"
 check "commit message is used" "Update app config" "$(git -C "$d/repo" log -1 --format=%s)"
-check "only the managed file is committed" "files/config.toml" "$(git -C "$d/repo" show --stat --format= HEAD)"
+rm -rf "$d"
+
+# Defect 1. `git commit` with no pathspec commits everything already in the
+# index, so anything the user staged beforehand lands in a commit whose message
+# says it is application-written config. The fixture must therefore contain
+# something else, staged.
+d=$(new_fixture)
+printf 'unrelated\n' > "$d/repo/other.txt"
+git -C "$d/repo" add other.txt
+git -C "$d/repo" commit -qm "add other"
+printf 'half-finished edit\n' > "$d/repo/other.txt"
+git -C "$d/repo" add other.txt
+drift "$d"
+out=$(run_save "$d" -y)
+check "the commit touches the managed file" "files/config.toml" "$(git -C "$d/repo" show --stat --format= HEAD)"
+check_not "the commit does not touch the staged file" "other.txt" "$(git -C "$d/repo" show --stat --format= HEAD)"
+check "the unrelated edit is still staged" "other.txt" "$(git -C "$d/repo" diff --cached --name-only)"
+check "the unrelated edit is still uncommitted" "half-finished edit" "$(cat "$d/repo/other.txt")"
+rm -rf "$d"
+
+# The preview showed every unrelated unstaged edit and hid every staged one —
+# precisely the content the unscoped commit was about to sweep in.
+d=$(new_fixture)
+printf 'noise\n' > "$d/repo/noise.txt"
+git -C "$d/repo" add noise.txt
+git -C "$d/repo" commit -qm "add noise"
+printf 'unstaged noise\n' > "$d/repo/noise.txt"
+drift "$d"
+out=$(run_save "$d" -y)
+check_not "the preview excludes unrelated edits" "unstaged noise" "$out"
+check "the preview includes the managed change" "setting = 2" "$out"
+rm -rf "$d"
+
+# A repository-wide `git status` answered "is the repo clean" when the question
+# was "did the copies change anything", so an unrelated edit made nd-save
+# proceed past an exit it should have taken.
+d=$(new_fixture)
+printf 'noise\n' > "$d/repo/noise.txt"
+git -C "$d/repo" add noise.txt
+git -C "$d/repo" commit -qm "add noise"
+printf 'unstaged noise\n' > "$d/repo/noise.txt"
+# The live file differs from the store but matches what is already committed,
+# so there is genuinely nothing to commit.
+printf 'setting = 1\n' > "$d/home/.config/app/config.toml"
+touch "$d/home/.config/app/config.toml"
+out=$(run_save "$d" -y)
+check "an unrelated edit does not make nd-save commit" "nothing to save" "$out"
+check "no commit was made" "add noise" "$(git -C "$d/repo" log -1 --format=%s)"
 rm -rf "$d"
 
 d=$(new_fixture)
