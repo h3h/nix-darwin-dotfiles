@@ -65,6 +65,10 @@ check_eq() { # check_eq <name> <expected> <actual>
   fi
 }
 
+check_status() { # check_status <name> <expected> <actual>
+  if [ "$2" = "$3" ]; then ok "$1"; else no "$1" "wanted exit $2, got $3"; fi
+}
+
 check_empty() { # check_empty <name> <actual>
   if [ -z "$2" ]; then ok "$1"; else no "$1" "wanted empty, got: $2"; fi
 }
@@ -96,6 +100,8 @@ activate() { # activate <script> <home> [dry]
   (
     set -eu
     export HOME="$home"
+    # Invoked by the sourced activation script, not from here.
+    # shellcheck disable=SC2329
     run() {
       if [[ -v DRY_RUN ]]; then
         echo "would run: $*"
@@ -114,6 +120,7 @@ activate() { # activate <script> <home> [dry]
 # builtins — lets the exports be observed directly, so a case can assert on the
 # value rather than on whatever the wrapped program happens to print. The
 # behavioural case further down proves the value really reaches the program.
+# shellcheck disable=SC2016  # $1 and $2 are the sourced-in-bash -c arguments.
 probe_src='
   exec() { :; }
   # shellcheck disable=SC1090
@@ -192,7 +199,11 @@ echo "dry run (defect 9)"
 # behind. The whole point of the fix is that a dry run writes nothing at all.
 h="$tmp/dry"
 mkdir -p "$h"
-out=$(activate "$ND_ACTIVATION" "$h" dry)
+out=$(activate "$ND_ACTIVATION" "$h" dry); st=$?
+# The unguarded write did not merely leave a file behind: with the state
+# directory not yet created, because `run mkdir` is a no-op under DRY_RUN, the
+# redirect itself fails and takes the rest of activation with it.
+check_status "a dry run completes" 0 "$st"
 check "a dry run says what it would do" "would write manifest to" "$out"
 check_eq "a dry run writes nothing at all" "" "$(find "$h" -mindepth 1)"
 check_eq "a dry run leaves no manifest.new" "" "$(find "$h" -name 'manifest.new')"
@@ -208,7 +219,8 @@ check_absent "and drops no scratch file beside it" "$h/$ND_MANIFEST_PATH.new"
 
 h="$tmp/wet"
 mkdir -p "$h"
-activate "$ND_ACTIVATION" "$h" > /dev/null
+out=$(activate "$ND_ACTIVATION" "$h"); st=$?
+check_status "a real run completes" 0 "$st"
 check "a real run writes the manifest" "$ND_MANIFEST_PATH" "$(find "$h" -type f)"
 check_eq "a real run leaves no manifest.new" "" "$(find "$h" -name 'manifest.new')"
 check_eq "a real run places the declared file" "setting = 1" "$(cat "$h/.config/app/config.toml")"

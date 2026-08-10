@@ -176,7 +176,8 @@ let
     else
       "${lib.head match}/bin/${name}";
 
-  failingMessages = c: lib.concatMapStrings (a: a.message + "\n") (lib.filter (a: !a.assertion) c.assertions);
+  failingMessages =
+    c: lib.concatMapStrings (a: a.message + "\n") (lib.filter (a: !a.assertion) c.assertions);
 in
 {
   activation = activationOf main;
