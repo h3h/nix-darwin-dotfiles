@@ -492,6 +492,30 @@ check_status "that refusal exits 1" 1 "$st"
 check "the repo file survives" '"plug":"mine"' "$(cat "$d/repo/files/nv/lazy-lock.json")"
 rm -rf "$d"
 
+# `awk -v x=VAL` runs the value through escape processing, so a destination
+# containing a backslash never equalled $2: the store source came back empty
+# and `[ -n "$src" ]` short-circuited the whole blocker check. Defect 2's
+# failure mode, reinstated for any path with a backslash in it.
+d=$(new_fixture)
+bs_dest='.config/app/co\nfig.toml'
+bs_repo='files/co\nfig.toml'
+printf 'setting = 1\n' > "$d/store-source-bs"
+chmod 0444 "$d/store-source-bs"
+install -m 0644 "$d/store-source-bs" "$d/home/$bs_dest"
+install -m 0644 "$d/store-source-bs" "$d/repo/$bs_repo"
+printf '%s\t%s\t%s\n' "$d/store-source-bs" "$bs_dest" "$bs_repo" \
+  >> "$d/home/.local/state/nd/manifest"
+git -C "$d/repo" add -A
+git -C "$d/repo" commit -qm "add the backslash file"
+printf 'setting = 2\n' > "$d/home/$bs_dest"
+printf 'setting = 3 # my unplaced edit\n' > "$d/repo/$bs_repo"
+out=$(run_save "$d" -y); st=$?
+check "a backslash in a destination still blocks" "never placed" "$out"
+check_status "the backslash refusal exits 1" 1 "$st"
+check "the repo edit under a backslash path survives" "my unplaced edit" \
+  "$(cat "$d/repo/$bs_repo")"
+rm -rf "$d"
+
 # Parent directories for a capture in a subdirectory the repo does not have.
 d=$(new_glob_fixture)
 mkdir -p "$d/home/.config/nv/lua/deep"

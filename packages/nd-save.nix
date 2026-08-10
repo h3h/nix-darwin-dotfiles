@@ -224,8 +224,24 @@ writeShellApplication {
           fi
           ;;
         *)
-          src="$(awk -F'\t' -v d="$dest" '$2 == d && $4 == "" { print $1; exit }' "$manifest")"
-          if [ -n "$src" ] && [ -e "$flake/$repo_rel" ] && ! cmp -s "$src" "$flake/$repo_rel"; then
+          # The destination reaches awk through the environment, not through
+          # -v: awk runs an assigned value through escape processing, so a
+          # destination containing a backslash arrived at the comparison as
+          # something else, never matched, and left $src empty — which
+          # short-circuited this entire check and reinstated defect 2 for any
+          # path with a backslash in it.
+          src="$(ND_DEST="$dest" awk -F'\t' \
+            'ENVIRON["ND_DEST"] == $2 && $4 == "" { print $1; exit }' "$manifest")"
+          if [ -z "$src" ]; then
+            # Fail closed. nd-status only calls a path drifted on the strength
+            # of a file record, so an empty $src means the manifest disagrees
+            # with itself; and "I cannot tell what was placed here" is not a
+            # reason to overwrite a file, it is the reason not to.
+            if [ -e "$flake/$repo_rel" ]; then
+              blockers="$blockers$repo_rel (cannot tell what was placed here)
+    "
+            fi
+          elif [ -e "$flake/$repo_rel" ] && ! cmp -s "$src" "$flake/$repo_rel"; then
             blockers="$blockers$repo_rel (repo copy differs from what was placed)
     "
           fi
