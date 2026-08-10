@@ -17,6 +17,50 @@ let
 
   globLib = import ../lib/glob.nix { inherit lib; };
 
+  # Every path-shaped string in this module is relative — a destination to
+  # `$HOME`, a source to sourceDir — and every one of them is interpolated into
+  # the manifest verbatim, so a leading or trailing slash reaches each reader as
+  # part of the path.
+  #
+  # nd-status normalises a trailing slash on a *glob root* defensively, because
+  # the manifest is a text file that can be hand-edited or truncated (E18). That
+  # is not a reason to let the module write one, and it is not enough on its
+  # own: the same `globs` key is also the prefix of every file record's
+  # destination, which nd-status does not normalise, so a key of ".config/nv/"
+  # still yields a manifest whose glob scan and file records disagree —
+  #
+  #   $ nd-status                       # key ".config/nv/", init.lua placed
+  #   new  .config/nv/init.lua  files/nv/init.lua
+  #
+  # — reporting a placed file as new, on every run, forever.
+  #
+  # Rejected rather than silently normalised. An assertion names the option, in
+  # the same way and for the same reason as the pathExists assertion below, and
+  # normalising would repair one half of a typo the user cannot see while
+  # leaving them to wonder why their key is not the one they wrote. An empty
+  # string and a leading slash are the same class of error and get the same
+  # treatment: they produce `$HOME//x` in the manifest and a git pathspec that
+  # is not inside the repo.
+  relPathProblem =
+    s:
+    if s == "" then
+      "is empty"
+    else if lib.hasPrefix "/" s then
+      "begins with a '/'"
+    else if lib.hasSuffix "/" s then
+      "ends with a '/'"
+    else
+      null;
+
+  relPathAssertion = option: value: {
+    assertion = relPathProblem value == null;
+    message =
+      "programs.nd.${option}: \"${value}\" ${relPathProblem value}. Paths here are relative"
+      + " — destinations to $HOME, sources to programs.nd.sourceDir — and are written into the"
+      + " manifest as given, so each must be a non-empty path with no leading or trailing"
+      + " slash.";
+  };
+
   # A glob entry contributes ordinary file records for everything that matches
   # in the repo right now, plus one glob record per pattern so nd-status can
   # recognise files the application creates later. Placement and drift detection
@@ -269,6 +313,12 @@ in
         message = "programs.nd.repoSubdir must be set when programs.nd.files or programs.nd.globs is non-empty.";
       }
     ]
+    ++ lib.mapAttrsToList (dest: _: relPathAssertion "files" dest) cfg.files
+    ++ lib.mapAttrsToList (dest: rel: relPathAssertion "files.\"${dest}\"" rel) cfg.files
+    ++ lib.mapAttrsToList (destRoot: _: relPathAssertion "globs" destRoot) cfg.globs
+    ++ lib.mapAttrsToList (
+      destRoot: g: relPathAssertion "globs.\"${destRoot}\".source" g.source
+    ) cfg.globs
     # lib.filesystem.listFilesRecursive on a missing path throws an evaluation
     # error whose message does not name the option that caused it.
     ++ lib.mapAttrsToList (destRoot: g: {
