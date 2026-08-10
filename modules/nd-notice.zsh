@@ -16,13 +16,21 @@ nd_notice() {
   lines=( ${lines:#} )
   (( $#lines )) || return 0
 
-  local -i drifted=0 missing=0 created=0
+  # Every arm matches the kind up to the tab that ends the field, and there is a
+  # default. Without one, a kind this notice predates incremented nothing and
+  # the notice stayed silent while nd-status was reporting a finding — which is
+  # what `unreadable` did the day it was added. Without the tab, a kind whose
+  # name merely begins with a known one ("newly-placed") would be counted as
+  # that kind and reported under the wrong word.
+  local -i drifted=0 missing=0 created=0 unreadable=0 unrecognised=0
   local l
   for l in $lines; do
     case $l in
-      (drifted*) (( drifted++ )) ;;
-      (missing*) (( missing++ )) ;;
-      (new*)     (( created++ )) ;;
+      (drifted$'\t'*)    (( drifted++ )) ;;
+      (missing$'\t'*)    (( missing++ )) ;;
+      (new$'\t'*)        (( created++ )) ;;
+      (unreadable$'\t'*) (( unreadable++ )) ;;
+      (*)                (( unrecognised++ )) ;;
     esac
   done
 
@@ -30,6 +38,8 @@ nd_notice() {
   (( drifted )) && parts+=("$drifted drifted")
   (( missing )) && parts+=("$missing missing")
   (( created )) && parts+=("$created new")
+  (( unreadable )) && parts+=("$unreadable unreadable")
+  (( unrecognised )) && parts+=("$unrecognised unrecognised")
   (( $#parts )) || return 0
 
   print -P "%F{yellow}nd:%f ${(j:, :)parts} config file(s) — run %Bnd-save%b to audit and commit"

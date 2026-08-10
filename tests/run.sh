@@ -1061,6 +1061,41 @@ out=$(HOME="$d/home" ND_MANIFEST="$d/nope" PATH="$(dirname "$ND_STATUS"):$PATH" 
 check_empty "no manifest prints nothing" "$out"
 rm -rf "$d"
 
+# E20. The case had no default arm, so a kind it did not know incremented
+# nothing and the notice stayed silent while nd-status was reporting a finding.
+d=$(new_fixture)
+rm -f "$d/store-source"
+out=$(run_notice "$d")
+check "an unreadable source is announced" "1 unreadable" "$out"
+rm -rf "$d"
+
+# A kind newer than this notice. nd-status is taken from PATH here rather than
+# from runtimeInputs, so unlike nd-switch and nd-save the suite can substitute a
+# stub and pin the catch-all directly.
+d=$(new_fixture)
+stub_status="$(mktemp -d)"
+printf '#!/bin/sh\nprintf "invented\\t.config/app/config.toml\\tfiles/config.toml\\n"\n' \
+  > "$stub_status/nd-status"
+chmod +x "$stub_status/nd-status"
+out=$(HOME="$d/home" PATH="$stub_status:$PATH" \
+  zsh -f -c "source '$ND_NOTICE'; nd_notice" 2>&1)
+check "a kind the notice does not know is announced" "1 unrecognised" "$out"
+rm -rf "$d" "$stub_status"
+
+# A kind whose name merely begins with a known one is not that kind. The arms
+# were prefix matches, so a future "newly-linked" would have been counted as
+# "new" and reported under the wrong word.
+d=$(new_fixture)
+stub_status="$(mktemp -d)"
+printf '#!/bin/sh\nprintf "newfangled\\t.config/app/config.toml\\tfiles/config.toml\\n"\n' \
+  > "$stub_status/nd-status"
+chmod +x "$stub_status/nd-status"
+out=$(HOME="$d/home" PATH="$stub_status:$PATH" \
+  zsh -f -c "source '$ND_NOTICE'; nd_notice" 2>&1)
+check "a kind that only starts like a known one is not counted as it" "1 unrecognised" "$out"
+check_not "and it is not counted as new" "1 new" "$out"
+rm -rf "$d" "$stub_status"
+
 echo
 echo "end to end"
 
