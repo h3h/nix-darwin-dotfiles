@@ -393,7 +393,17 @@ writeShellApplication {
     fi
 
     echo "nd-save: changes"
-    git -C "$flake" --no-pager diff HEAD -- "''${paths[@]}"
+    # `diff HEAD` is fatal in a repository whose first commit has not been made
+    # yet, and by this point the copies have already happened, so dying here
+    # leaves the working tree changed and says only "fatal: bad revision".
+    # Against an unborn HEAD the comparison that means the same thing is the
+    # working tree against the index, which the intent-to-add entries above
+    # make complete.
+    if git -C "$flake" rev-parse --verify --quiet HEAD > /dev/null; then
+      git -C "$flake" --no-pager diff HEAD -- "''${paths[@]}"
+    else
+      git -C "$flake" --no-pager diff -- "''${paths[@]}"
+    fi
     echo
 
     echo "nd-save: will commit to branch '$branch'"

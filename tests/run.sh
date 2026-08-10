@@ -525,6 +525,23 @@ check "a nested capture creates its repo directory" "copied back into the repo" 
 check "the nested file lands in the repo" "return 4" "$(cat "$d/repo/files/nv/lua/deep/new.lua")"
 rm -rf "$d"
 
+# A flake repo whose first commit has not been made yet: `git diff HEAD` is
+# fatal there, and nd-save reached it after the copies and the intent-to-add
+# had already happened, so it died mid-way with a git error for a message.
+d=$(new_fixture)
+rm -rf "$d/repo/.git"
+git -C "$d/repo" init -q -b main
+git -C "$d/repo" config user.email t@example.com
+git -C "$d/repo" config user.name Test
+drift "$d"
+out=$(run_save "$d" -y); st=$?
+check_not "an unborn HEAD is not a fatal error" "bad revision" "$out"
+check_status "an unborn HEAD exits 0" 0 "$st"
+check "an unborn HEAD still previews the change" "setting = 2" "$out"
+check "an unborn HEAD gets its first commit" "files/config.toml" \
+  "$(git -C "$d/repo" show --stat --format= HEAD)"
+rm -rf "$d"
+
 # Defect 3. With -y the branch was printed to a terminal nobody is reading and
 # the commit proceeded regardless, so the unattended path was the one with no
 # check at all.
