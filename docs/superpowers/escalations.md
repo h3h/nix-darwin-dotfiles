@@ -831,16 +831,16 @@ recorded), `unresolved` (escalated and still undecided at hand-off).
   message citing `(E20)` will outlive anyone's memory of what E20 was.
   `README.md:267` separately says the suite has 193 cases; it has 210.
 - **Options:** (a) fix both here; (b) raise them for their owners.
-- **Status:** unresolved — **for the owner of `packages/nd-switch.nix` and the
-  README**
-- **Resolution:** (b). `packages/nd-switch.nix` is explicitly not mine to touch
-  in this change and another agent was in `flake.nix` at the same time; the
-  README is nobody's declared file here and its test count goes stale on almost
-  every commit, so correcting it in isolation invites a conflict for a number
-  that will be wrong again shortly. Neither is a defect — both are stale prose
-  next to correct behaviour. What is needed: drop `— nd-save cannot classify
-  them either (E20)` from that line, keep the rest, and refresh the README's
-  case count when the suite next settles.
+- **Status:** resolved
+- **Resolution:** (b) at the time, then (a) by the coordinating session once
+  every agent had finished and the file was free. The `nd-switch` line now reads
+  "nd-save reports them too, and skips them — there is nothing it can compare",
+  which is what `nd-save` actually does and carries no escalation number: an
+  internal reference like `(E20)` in user-facing output outlives anyone's memory
+  of what E20 was, and a grep confirmed it was the only one that had leaked out
+  of the log. The README's count is refreshed to 210 alongside a description of
+  the three evaluation-time checks that did not exist when that section was
+  written.
 
 ## E24 — a shared git index put another agent's staged work in my commit
 - **Task:** E20 close-out, process
@@ -952,10 +952,49 @@ recorded), `unresolved` (escalated and still undecided at hand-off).
 - **Options:** (a) fix it — the assertion becomes
   `pathExists (…) && pathType (…) == "directory"`, or a second assertion says
   "is not a directory"; (b) raise it for the module's owner.
-- **Status:** unresolved — **for the owner of `modules/home-manager.nix`**
-- **Resolution:** (b). `modules/` is outside this change's ownership and another
-  agent was live in the file. It is one line next to an assertion that already
-  exists for the neighbouring case, and the message should name the option and
-  say the source must be a directory. No test is added for it here: pinning the
-  current behaviour would mean asserting on the *unhelpful* message, which the
-  fix is meant to remove.
+- **Status:** resolved
+- **Resolution:** (b) at the time, then (a) by the coordinating session once the
+  file was free. The existing `pathExists` assertion now also requires
+  `builtins.readFileType src == "directory"` and reports which of the two it
+  hit — `it is missing.` or `it is a regular.` — so both failures name the
+  option instead of aborting the evaluation anonymously.
+
+  Note `builtins.pathType` does not exist; the builtin is `readFileType`. The
+  first attempt used the wrong name and failed with `attribute 'pathType'
+  missing`, which is worth recording because that error looks like a nixpkgs
+  version problem and is not.
+
+  Two cases added to `tests/module.sh`, and the pre-existing
+  "a missing glob source names the option" case updated: it asserted the old
+  wording and went red on the fix, which is the assertion working.
+
+---
+
+## Closing state
+
+26 of 27 entries are resolved. **One is deliberately left open for the
+maintainer**, because it is a judgement about how a destructive command should
+behave and not something an implementer should settle:
+
+- **E17 — should `nd-switch --rollback` honour the drift gate?** It now names
+  every drifted file it is about to discard, which is defect 10's fix applied to
+  the second door. What it does *not* do is refuse. The argument for warning
+  only is that a rollback is what you reach for when things are broken, and a
+  hard block would be in the way at the worst moment. The argument for gating is
+  that a rollback destroys drifted content exactly as an ordinary switch does,
+  `--allow-dirty` is already the established escape hatch, and the whole design
+  rests on never overwriting drifted config without consent. Two tests encode
+  the current answer and are named in E17; changing the answer means changing
+  them.
+
+Also recorded, and not defects:
+
+- **E24** — one agent's bare `git commit` swept another's staged files into its
+  commit. Nothing was lost, and no history was rewritten because a second agent
+  was live in the same tree. Worth noting only because it is precisely defect 1,
+  reproduced by accident, by the tooling, while fixing defect 1.
+- **E25** — three things the new module check deliberately does not prove:
+  home-manager's own definition of `run` (the check pins the module's *use* of
+  it), the store hash behind field 1 of a file record (pinned instead by the
+  round trip), and a trailing slash in a `globs` key (now rejected at evaluation
+  time, so unreachable rather than uncovered).
