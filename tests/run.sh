@@ -248,6 +248,18 @@ out=$(run_switch "$d" --build --allow-dirty)
 check "--allow-dirty still reports missing" "will be restored" "$out"
 rm -rf "$d"
 
+# An unreadable store source means "I cannot tell whether this drifted". It is
+# said out loud and it does not block: the switch is what rewrites the manifest,
+# so refusing would leave the tool unable to repair its own state. See E19.
+d=$(new_fixture)
+rm -f "$d/store-source"
+out=$(run_switch "$d" --build)
+check "an unreadable source is named" "cannot be read" "$out"
+check "an unreadable source names the path" ".config/app/config.toml" "$out"
+check "an unreadable source does not block" "building" "$out"
+check_not "an unreadable source is not reported as drift" "changed since they were placed" "$out"
+check_not "an unreadable source is not an unknown kind" "does not know" "$out"
+rm -rf "$d"
 
 # Flag order must not change behaviour: positional parsing once let
 # `--allow-dirty --build` perform a switch instead of a build.
@@ -887,6 +899,70 @@ touch "$d/home/.config/nv/$(printf 'we\nird').lua"
 out=$(run_status "$d")
 check "a path with a newline is skipped with a warning" "skipping path with a newline" "$out"
 check_not "a path with a newline is not emitted" "new	.config/nv/we" "$out"
+rm -rf "$d"
+
+# The tab is worse than the newline and was not guarded. nd-status emitted a
+# four-field line into a three-field tab-separated format; nd-save split it at
+# the tab, ran its credential grep against a path that does not exist, read that
+# grep's exit 2 as "clean" — a fail-open on the credential scan — and then died
+# inside install.
+d=$(new_glob_fixture)
+touch "$d/home/.config/nv/$(printf 'we\tird').lua"
+out=$(run_status "$d")
+check "a path with a tab is skipped with a warning" "skipping path with a tab" "$out"
+check_not "a path with a tab is not emitted" "new	.config/nv/we	ird.lua" "$out"
+rm -rf "$d"
+
+# E11. globToERE does not escape `-` and cannot, so a pattern like `-foo/**`
+# arrives as the ERE `-foo/.*` and grep reads it as options. grep exits 2 inside
+# an `if` condition, where errexit does not apply, so every path under that root
+# was skipped for good while grep printed usage to stderr.
+d=$(new_glob_fixture)
+printf '%s\t%s\t%s\t%s\t%s\n' "-" ".config/nv" "files/nv" "glob" '-foo/.*' \
+  >> "$d/home/.local/state/nd/manifest"
+mkdir -p "$d/home/.config/nv/-foo"
+printf 'q\n' > "$d/home/.config/nv/-foo/a.txt"
+out=$(run_status "$d")
+check "a pattern starting with a dash still matches" "new	.config/nv/-foo/a.txt	files/nv/-foo/a.txt" "$out"
+check_not "a pattern starting with a dash is not read as options" "grep:" "$out"
+rm -rf "$d"
+
+# A trailing slash on a globs key made the prefix strip miss, so rel stayed
+# absolute: every placed file was reported new forever, at a repo path outside
+# the repo that nd-save would have created there.
+d=$(new_glob_fixture)
+{
+  printf '%s\t%s\t%s\n' "$d/store/init.lua"     ".config/nv/init.lua"     "files/nv/init.lua"
+  printf '%s\t%s\t%s\n' "$d/store/lua/plug.lua" ".config/nv/lua/plug.lua" "files/nv/lua/plug.lua"
+  printf '%s\t%s\t%s\t%s\t%s\n' "-" ".config/nv/" "files/nv/" "glob" '(.*/)?[^/]*\.lua'
+} > "$d/home/.local/state/nd/manifest"
+printf 'return 3\n' > "$d/home/.config/nv/extra.lua"
+out=$(run_status "$d")
+check "a trailing slash in the root still yields relative paths" \
+  "new	.config/nv/extra.lua	files/nv/extra.lua" "$out"
+check_not "a trailing slash does not produce an absolute path" "$d/home" "$out"
+check_not "a placed file is still not new under a trailing-slash root" "new	.config/nv/init.lua" "$out"
+rm -rf "$d"
+
+# cmp exits 2 when it cannot read a file, and treating that as "they differ"
+# called the file drifted and sent nd-save off to blame the repo copy for
+# differing from a source neither of them could open.
+d=$(new_fixture)
+rm -f "$d/store-source"
+out=$(run_status "$d")
+check "an unreadable store source is its own kind" "unreadable	.config/app/config.toml	files/config.toml" "$out"
+check_not "an unreadable store source is not drift" "drifted" "$out"
+rm -rf "$d"
+
+# Only reachable by hand-editing or truncation, but it fails in the dangerous
+# direction: `while read` drops an unterminated final record, so a drifted file
+# in one is reported by nothing and overwritten by the next switch in silence.
+d=$(new_fixture)
+drift "$d"
+printf '%s\t%s\t%s' "$d/store-source" ".config/app/config.toml" "files/config.toml" \
+  > "$d/home/.local/state/nd/manifest"
+out=$(run_status "$d")
+check "an unterminated final record is still read" "drifted	.config/app/config.toml" "$out"
 rm -rf "$d"
 
 # A glob root the application has not created yet is not an error.
