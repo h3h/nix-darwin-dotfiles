@@ -27,6 +27,7 @@ writeShellApplication {
     allow_dirty=""
     rollback=""
     steps=1
+    tab="$(printf '\t')"
 
     gens() {
       find /nix/var/nix/profiles -maxdepth 1 -name 'system-*-link' \
@@ -67,7 +68,8 @@ writeShellApplication {
         -h | --help)
           echo "usage: nd-switch [--build] [--allow-dirty] [--rollback [N]] [-- ARGS...]"
           echo "  --build         build only, no sudo, no switch"
-          echo "  --allow-dirty   switch even though managed config has drifted"
+          echo "  --allow-dirty   switch anyway, discarding the contents of drifted"
+          echo "                  files; they are named before anything is built"
           echo "  --rollback [N]  go back N generations (default 1)"
           exit 0
           ;;
@@ -84,7 +86,95 @@ writeShellApplication {
       exit 1
     fi
 
+    # Refuse to place over config an application rewrote. The comparison is
+    # against the store path the current generation installed, not against the
+    # repo: comparing to the repo cannot tell "the app changed this file" from
+    # "I edited the repo and want to place it", and would refuse exactly the
+    # switch you meant to run. nd-status owns that comparison.
+    #
+    # Only `drifted` blocks, and only when called with an empty label. A
+    # `missing` file will be restored by the switch and a `new` file has no
+    # store source to be overwritten by, so neither has anything for the gate to
+    # protect — but both are reported, because restoring a file somebody deleted
+    # on purpose without saying so is the behaviour defect 6 is about.
+    #
+    # With a label — "--allow-dirty", "--rollback" — the drift list is printed
+    # anyway and says the contents are about to be discarded. Defect 10: the
+    # refusal path named every drifted file and the destructive path named none,
+    # so the flag that reads as "proceed" silently meant "overwrite". Every
+    # caller runs this before `nix build` and before the sudo prompt, so there
+    # is still time to interrupt.
+    #
+    # Returns 1 only when the gate refuses.
+    report_status() {
+      local label="$1"
+      local status drifted missing created unreadable unknown
+
+      if [ ! -f "$manifest" ]; then
+        return 0
+      fi
+
+      status="$(nd-status)"
+
+      drifted="$(printf '%s\n' "$status" | grep "^drifted$tab" | cut -f2 || true)"
+      missing="$(printf '%s\n' "$status" | grep "^missing$tab" | cut -f2 || true)"
+      created="$(printf '%s\n' "$status" | grep "^new$tab" | cut -f2 || true)"
+      unreadable="$(printf '%s\n' "$status" | grep "^unreadable$tab" | cut -f2 || true)"
+      # Anything else is a kind this nd-switch predates. Saying so beats
+      # dropping it, which is how a newer nd-status paired with an older
+      # nd-switch would quietly lose a whole category — the same silence
+      # defect 10 is about, one version skew away.
+      unknown="$(printf '%s\n' "$status" | grep -v '^$' \
+        | grep -vE "^(drifted|missing|new|unreadable)$tab" || true)"
+
+      if [ -n "$missing" ]; then
+        echo "nd-switch: these managed files are gone and will be restored:" >&2
+        printf '%s\n' "$missing" | sed 's/^/  /' >&2
+      fi
+
+      if [ -n "$created" ]; then
+        echo "nd-switch: these files are not yet in the repo:" >&2
+        printf '%s\n' "$created" | sed 's/^/  /' >&2
+        echo "nd-switch: run 'nd-save' to capture them." >&2
+      fi
+
+      if [ -n "$unreadable" ]; then
+        echo "nd-switch: the source these files were placed from cannot be read:" >&2
+        printf '%s\n' "$unreadable" | sed 's/^/  /' >&2
+        echo "nd-switch: whether they changed since cannot be told, and this switch will overwrite them." >&2
+        echo "nd-switch: copy anything you need aside by hand — nd-save cannot classify them either (E20)." >&2
+        echo "nd-switch: switching rewrites the manifest, which is what repairs this." >&2
+      fi
+
+      if [ -n "$unknown" ]; then
+        echo "nd-switch: nd-status reported kinds this nd-switch does not know:" >&2
+        printf '%s\n' "$unknown" | sed 's/^/  /' >&2
+        echo "nd-switch: they are outside the drift gate; nd-switch and nd-status may be out of step." >&2
+      fi
+
+      if [ -n "$drifted" ]; then
+        if [ -z "$label" ]; then
+          echo "nd-switch: these files changed since they were placed:" >&2
+          printf '%s\n' "$drifted" | sed 's/^/  /' >&2
+          echo "nd-switch: switching would overwrite them." >&2
+          echo "nd-switch: run 'nd-save' to copy them back and commit, or --allow-dirty to discard" >&2
+          return 1
+        fi
+        echo "nd-switch: $label: these files changed since they were placed and will be OVERWRITTEN:" >&2
+        printf '%s\n' "$drifted" | sed 's/^/  /' >&2
+        echo "nd-switch: their contents will be discarded. Run 'nd-save' first to keep them." >&2
+      fi
+
+      return 0
+    }
+
     if [ -n "$rollback" ]; then
+      # A rollback warns and proceeds; it does not gate. Reaching for a rollback
+      # usually means something is already broken, and refusing to run the
+      # repair is the worse trade. Whether it should honour the gate, with
+      # --allow-dirty as the override, is E17 and is the maintainer's call.
+      report_status "--rollback"
+
       current="$(readlink /nix/var/nix/profiles/system | sed 's|system-\([0-9]*\)-link|\1|')"
 
       if [ "$steps" -eq 1 ]; then
@@ -109,40 +199,10 @@ writeShellApplication {
       exit 0
     fi
 
-    # Refuse to place over config an application rewrote. The comparison is
-    # against the store path the current generation installed, not against the
-    # repo: comparing to the repo cannot tell "the app changed this file" from
-    # "I edited the repo and want to place it", and would refuse exactly the
-    # switch you meant to run. nd-status owns that comparison.
-    #
-    # Only `drifted` blocks. A `missing` file will be restored by the switch and
-    # a `new` file has no store source to be overwritten by, so neither has
-    # anything for the gate to protect — but both are reported, because
-    # restoring a file somebody deleted on purpose without saying so is the
-    # behaviour defect 6 is about.
-    if [ -f "$manifest" ]; then
-      status="$(nd-status)"
-
-      drifted="$(printf '%s\n' "$status" | grep '^drifted' | cut -f2 || true)"
-      missing="$(printf '%s\n' "$status" | grep '^missing' | cut -f2 || true)"
-      created="$(printf '%s\n' "$status" | grep '^new' | cut -f2 || true)"
-
-      if [ -n "$missing" ]; then
-        echo "nd-switch: these managed files are gone and will be restored:" >&2
-        printf '%s\n' "$missing" | sed 's/^/  /' >&2
-      fi
-
-      if [ -n "$created" ]; then
-        echo "nd-switch: these files are not yet in the repo:" >&2
-        printf '%s\n' "$created" | sed 's/^/  /' >&2
-        echo "nd-switch: run 'nd-save' to capture them." >&2
-      fi
-
-      if [ -z "$allow_dirty" ] && [ -n "$drifted" ]; then
-        echo "nd-switch: these files changed since they were placed:" >&2
-        printf '%s\n' "$drifted" | sed 's/^/  /' >&2
-        echo "nd-switch: switching would overwrite them." >&2
-        echo "nd-switch: run 'nd-save' to copy them back and commit, or --allow-dirty to discard" >&2
+    if [ -n "$allow_dirty" ]; then
+      report_status "--allow-dirty"
+    else
+      if ! report_status ""; then
         exit 1
       fi
     fi

@@ -128,7 +128,16 @@ new_glob_fixture() {
 
 drift() { printf 'setting = 2\n' > "$1/home/.config/app/config.toml"; }
 
+# nd-switch's rollback path ends in `sudo darwin-rebuild`, which the suite
+# neither can nor should run. A stub `sudo` that only echoes stands in; the real
+# one is never reached because nd-switch takes sudo from the caller's PATH.
+stub_bin="$(mktemp -d)"
+printf '#!/bin/sh\necho "stub sudo $*"\n' > "$stub_bin/sudo"
+chmod +x "$stub_bin/sudo"
+trap 'rm -rf "$stub_bin"' EXIT
+
 run_switch() { HOME="$1/home" ND_FLAKE="$1/repo" "$ND_SWITCH" "${@:2}" 2>&1; }
+run_rollback() { HOME="$1/home" ND_FLAKE="$1/repo" PATH="$stub_bin:$PATH" "$ND_SWITCH" "${@:2}" 2>&1; }
 run_save() { HOME="$1/home" ND_FLAKE="$1/repo" "$ND_SAVE" "${@:2}" 2>&1; }
 run_status() { HOME="$1/home" "$ND_STATUS" "${@:2}" 2>&1; }
 
@@ -159,10 +168,51 @@ check "drift suggests nd-save" "nd-save" "$out"
 check_status "drift exits 1" 1 "$st"
 rm -rf "$d"
 
+# Defect 10. --allow-dirty bypasses the gate and lets activation overwrite every
+# drifted file. It used to print nothing at all: the refusal path named every
+# file, the destructive path named none. The bypass still has to happen — hence
+# the two assertions that the refusal is absent and the build was reached, both
+# of which go red if a gate reappears — but it has to say what it is discarding,
+# and say it before `nix build` and before the sudo prompt.
 d=$(new_fixture)
 drift "$d"
 out=$(run_switch "$d" --build --allow-dirty)
-check_not "--allow-dirty skips the gate" "changed since they were placed" "$out"
+check "--allow-dirty names what it will discard" "will be OVERWRITTEN" "$out"
+check "--allow-dirty names the file" ".config/app/config.toml" "$out"
+check "--allow-dirty says the contents go" "contents will be discarded" "$out"
+check "--allow-dirty points at nd-save" "Run 'nd-save' first to keep them" "$out"
+check_not "--allow-dirty skips the gate" "run 'nd-save' to copy them back and commit" "$out"
+check "--allow-dirty still reaches the build step" "building" "$out"
+rm -rf "$d"
+
+# The warning has to come out before anything is built and before sudo is asked
+# for anything, or there is nothing left to interrupt.
+d=$(new_fixture)
+drift "$d"
+out=$(run_switch "$d" --build --allow-dirty)
+check "the discard warning precedes the build" "OVERWRITTEN" \
+  "$(printf '%s\n' "$out" | sed -n '1,/building/p')"
+rm -rf "$d"
+
+# --rollback returned before the drift check was ever reached, so a rollback
+# overwrote every drifted file in silence — the same loss as defect 10 through a
+# door the flag does not even guard. It warns and proceeds; it must not gate.
+# See E17.
+d=$(new_fixture)
+drift "$d"
+out=$(run_rollback "$d" --rollback)
+check "--rollback names what it will discard" "will be OVERWRITTEN" "$out"
+check "--rollback names the file" ".config/app/config.toml" "$out"
+check "--rollback says the contents go" "contents will be discarded" "$out"
+check_not "--rollback is not blocked" "run 'nd-save' to copy them back and commit" "$out"
+check "--rollback still rolls back" "darwin-rebuild switch --rollback" "$out"
+rm -rf "$d"
+
+# A clean tree rolls back with nothing said about drift.
+d=$(new_fixture)
+out=$(run_rollback "$d" --rollback)
+check_not "a clean rollback warns about nothing" "OVERWRITTEN" "$out"
+check "a clean rollback still rolls back" "darwin-rebuild switch --rollback" "$out"
 rm -rf "$d"
 
 # Defect 6. A deletion is not drift and must not block, but it must be said.
@@ -174,7 +224,11 @@ rm "$d/home/.config/app/config.toml"
 out=$(run_switch "$d" --build)
 check "a missing file is named" "will be restored" "$out"
 check "a missing file names the path" ".config/app/config.toml" "$out"
-check_not "a missing file does not block" "changed since they were placed" "$out"
+# "changed since they were placed" is only ever emitted on the drifted path, so
+# asserting its absence here is vacuous — deleting the whole `missing`
+# classification would leave it green. Reaching the build step is the thing that
+# actually discriminates: a block exits before it.
+check "a missing file does not block" "building" "$out"
 rm -rf "$d"
 
 # A new file cannot be overwritten by a switch — there is nothing in the store
@@ -184,7 +238,7 @@ printf '{"plug":"abc"}\n' > "$d/home/.config/nv/lazy-lock.json"
 out=$(run_switch "$d" --build)
 check "a new file is named" "not yet in the repo" "$out"
 check "a new file names the path" "lazy-lock.json" "$out"
-check_not "a new file does not block" "changed since they were placed" "$out"
+check "a new file does not block" "building" "$out"
 rm -rf "$d"
 
 # --allow-dirty suppresses the block, not the reports.
@@ -193,6 +247,7 @@ rm "$d/home/.config/app/config.toml"
 out=$(run_switch "$d" --build --allow-dirty)
 check "--allow-dirty still reports missing" "will be restored" "$out"
 rm -rf "$d"
+
 
 # Flag order must not change behaviour: positional parsing once let
 # `--allow-dirty --build` perform a switch instead of a build.
@@ -815,12 +870,14 @@ out=$(run_status "$d" | grep -c 'extra.lua')
 check "a file matching two patterns is emitted once" "1" "$out"
 rm -rf "$d"
 
+# Only the symlink is asserted. A directory named dir.lua was asserted here too,
+# and `find -type f` cannot return one under any plausible implementation, so
+# that case could not fail; a symlink can, because -type f and -type l are one
+# character apart.
 d=$(new_glob_fixture)
 ln -s /etc/hosts "$d/home/.config/nv/link.lua"
-mkdir -p "$d/home/.config/nv/dir.lua"
 out=$(run_status "$d")
 check_not "a symlink under the root is skipped" "link.lua" "$out"
-check_not "a directory under the root is skipped" "dir.lua" "$out"
 rm -rf "$d"
 
 # The output format is line-based and cannot represent this. Skipping loudly
@@ -890,7 +947,7 @@ printf '{"nvim-treesitter":{"commit":"abc123"}}\n' > "$d/home/.config/nv/lazy-lo
 
 out=$(run_switch "$d" --build)
 check "the switch reports it without blocking" "not yet in the repo" "$out"
-check_not "the switch is not blocked" "changed since they were placed" "$out"
+check "the switch is not blocked" "building" "$out"
 
 out=$(run_save "$d" -y)
 check "nd-save captures it" "lazy-lock.json" "$out"
