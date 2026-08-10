@@ -253,9 +253,19 @@ explicitly exported `ND_*` still wins.
   edit waiting to be switched in; nd-save names it and stops rather than copying
   over it. The same applies to a newly captured file whose repo path is already
   occupied. `--force` overrides.
+- **`nd-save` refuses to overwrite content you have staged.** If a managed
+  repo path has staged content that differs from `HEAD`, saving over it would
+  make that blob unreachable — the same loss as the previous bullet, one version
+  to the left. `--force` overrides.
 - **`nd-save` commits only the files it copied.** Every git operation it runs
   takes a pathspec, so anything else you had staged stays staged and
   uncommitted.
+- **`nd-save` leaves the index as it found it on every exit that does not
+  commit.** It marks a newly captured file `--intent-to-add` before the
+  confirmation prompt, so the preview can show a file git does not yet track. If
+  you decline, interrupt it, or the commit fails, the index is restored — an
+  entry left behind would be swept into your next `git commit -am`, which is the
+  first bullet's failure through a different door.
 
 ## Tests
 
@@ -264,18 +274,33 @@ $ nix flake check          # runs the suite in a sandbox
 $ bash tests/run.sh        # or directly
 ```
 
-193 cases covering argument parsing; drift, missing, new and unreadable
+210 cases covering argument parsing; drift, missing, new and unreadable
 classification; the gate, its two overrides and what they say they will discard;
-flag ordering; copy-back; commit scoping and contents;
-the branch guard and detached HEAD; the unplaced-repo-edit refusal and
-`--force`; derived commit subjects; credential refusal and the benign shapes
-that must not trip it; the zsh notice; and the end-to-end capture loop for an
-application-created file. Every case builds a synthetic `$HOME`, manifest and
-throwaway git repo, so the suite needs no sudo, performs no switch, and never
-touches a real home directory.
+flag ordering; copy-back; commit scoping and contents; the branch guard and
+detached HEAD; the unplaced-repo-edit and staged-content refusals and `--force`;
+what the index looks like after every exit that does not commit; derived commit
+subjects; credential refusal and the benign shapes that must not trip it; the
+zsh notice; and the end-to-end capture loop for an application-created file.
+Every case builds a synthetic `$HOME`, manifest and throwaway git repo, so the
+suite needs no sudo, performs no switch, and never touches a real home
+directory.
 
-`nix flake check` also runs `tests/glob.nix`, a pure evaluation test that pins
-`globToERE`'s translations and the file sets they match.
+`nix flake check` runs three further checks:
+
+- `tests/glob.nix`, a pure evaluation test pinning `globToERE`'s translations
+  and the file sets they match.
+- `tests/glob-engines.sh`, which replays every one of those cases through
+  `grep -qxE` and fails if it disagrees with the verdict `builtins.match` gave
+  the same regex. The two engines are not the same dialect — `\]` is fine to one
+  and fatal to the other — so "one translator, two anchoring mechanisms" has to
+  be tested rather than asserted.
+- `tests/module.nix` and `tests/module.sh`, 59 cases evaluating the real
+  home-manager module against a stubbed option surface: the exact manifest text
+  it generates, which files each pattern enumerates, that a dry-run activation
+  writes nothing at all, that the option wrappers export what they should and
+  still let an explicit `ND_*` win, and a round trip feeding the generated
+  manifest to the real `nd-status`. That last one is the only place the code
+  that writes the manifest and the code that reads it meet.
 
 ## Limitations
 
