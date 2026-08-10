@@ -314,10 +314,64 @@ writeShellApplication {
       fi
     }
 
+    # A snapshot of the whole index file is strictly better than the
+    # path-scoped reset wherever it is available, because it also puts back
+    # staging the user did on a *tracked* managed path — which the `git add`
+    # further down replaces, and which no reset can reconstruct. It is not
+    # always available: a repository that has never staged anything has no
+    # index file yet. So it degrades to the reset rather than depending on it.
+    #
+    # `--git-path` is resolved relative to the repository, which is where every
+    # git invocation here already runs, and it honours a redirected index.
+    index_file="$(git -C "$flake" rev-parse --git-path index)"
+    case "$index_file" in
+      /*) ;;
+      *) index_file="$flake/$index_file" ;;
+    esac
+
+    index_backup=""
+    if [ -f "$index_file" ]; then
+      index_backup="$(mktemp)"
+      if ! cp -p "$index_file" "$index_backup"; then
+        rm -f "$index_backup"
+        index_backup=""
+      fi
+    fi
+
+    restore_index() {
+      if [ -n "$index_backup" ]; then
+        if cp -p "$index_backup" "$index_file"; then
+          return 0
+        fi
+        echo "nd-save: could not restore the index from $index_backup" >&2
+      fi
+      unstage_captures
+    }
+
+    # Everything below mutates the index, so every exit that is not a
+    # successful commit has to put it back — including the exits that are not
+    # an `exit` statement at all. A `read` that returns non-zero under errexit,
+    # and Ctrl-C, both left the intent-to-add entry behind, and a leftover
+    # entry is swept into the user's next `git commit -am`: defect 1's failure
+    # arriving through the door E8 did not close.
+    #
+    # SIGINT is trapped only so that the EXIT trap runs at all; bash does not
+    # run an EXIT trap when it dies of an untrapped signal.
+    committed=""
+    on_exit() {
+      if [ -z "$committed" ]; then
+        restore_index
+      fi
+      if [ -n "$index_backup" ]; then
+        rm -f "$index_backup"
+      fi
+    }
+    trap on_exit EXIT
+    trap 'exit 130' INT
+
     git -C "$flake" add --intent-to-add -- "''${paths[@]}"
 
     if [ -z "$(git -C "$flake" status --porcelain -- "''${paths[@]}")" ]; then
-      unstage_captures
       echo "nd-save: copies are identical to the committed versions, nothing to commit"
       exit 0
     fi
@@ -330,13 +384,25 @@ writeShellApplication {
 
     if [ -z "$assume_yes" ]; then
       printf "nd-save: proceed? [y/N] "
-      read -r reply
+      # `read` returns non-zero when the input ends without a newline, and
+      # under errexit that killed the script before this `case` could run. An
+      # answer that never got terminated is not an answer either way, so it
+      # takes the default, which is no: consenting to a commit is worth a
+      # newline, and the unattended cases — closed stdin, a dead pipe — must
+      # not read as consent.
+      if ! read -r reply; then
+        reply=""
+        echo
+      fi
       case "$reply" in
         y | Y) ;;
         *)
-          unstage_captures
-          echo "nd-save: aborted. Files were copied into the repo but nothing was"
-          echo "nd-save: committed, and the index is as you left it."
+          # No line of this may begin "nd-save: committed": `grep nd-save:
+          # committed` is the obvious way to ask whether a run succeeded, and
+          # the earlier wording wrapped onto exactly that.
+          echo "nd-save: aborted, nothing was committed."
+          echo "nd-save: the files are copied into the repo working tree, and the"
+          echo "nd-save: index is as you left it."
           exit 1
           ;;
       esac
@@ -348,6 +414,7 @@ writeShellApplication {
 
     git -C "$flake" add -- "''${paths[@]}"
     git -C "$flake" commit --only -m "$msg" -- "''${paths[@]}"
+    committed=1
     echo "nd-save: committed. Not pushed."
   '';
 }

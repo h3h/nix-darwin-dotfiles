@@ -321,6 +321,75 @@ check "the user's own staging of a tracked path survives" "files/config.toml" \
   "$(git -C "$d/repo" diff --cached --name-only)"
 rm -rf "$d"
 
+# `read` returns non-zero at end of input, and nd-save runs under errexit, so
+# every way of ending the prompt without a newline killed the script before the
+# abort path could run: the intent-to-add entry stayed in the index and nothing
+# was printed. Three doors, one failure — E8's leak, reopened.
+d=$(new_glob_fixture)
+printf '{"plug":"abc"}\n' > "$d/home/.config/nv/lazy-lock.json"
+out=$(printf 'n' | HOME="$d/home" ND_FLAKE="$d/repo" "$ND_SAVE" 2>&1); st=$?
+check "a reply with no trailing newline still aborts" "aborted" "$out"
+check_status "that abort exits 1" 1 "$st"
+check_empty "an unterminated reply leaves the capture out of the index" \
+  "$(git -C "$d/repo" ls-files -- files/nv/lazy-lock.json)"
+rm -rf "$d"
+
+# Closed stdin is the unattended case: a cron entry, a pipe that ended.
+d=$(new_glob_fixture)
+printf '{"plug":"abc"}\n' > "$d/home/.config/nv/lazy-lock.json"
+out=$(HOME="$d/home" ND_FLAKE="$d/repo" "$ND_SAVE" < /dev/null 2>&1); st=$?
+check "closed stdin aborts with a message" "aborted" "$out"
+check_status "closed stdin exits 1" 1 "$st"
+check_empty "closed stdin leaves the capture out of the index" \
+  "$(git -C "$d/repo" ls-files -- files/nv/lazy-lock.json)"
+rm -rf "$d"
+
+# An input that ended mid-answer is not an answer. The default is no.
+d=$(new_fixture)
+drift "$d"
+out=$(printf 'y' | HOME="$d/home" ND_FLAKE="$d/repo" "$ND_SAVE" 2>&1); st=$?
+check "an unterminated 'y' is not consent" "aborted" "$out"
+check_status "an unterminated 'y' exits 1" 1 "$st"
+check "an unterminated 'y' commits nothing" "initial" "$(git -C "$d/repo" log -1 --format=%s)"
+rm -rf "$d"
+
+# Ctrl-C at the prompt. Job control is switched on for the spawn so the child
+# gets its own process group and the default SIGINT disposition; a background
+# job started with job control off inherits SIGINT ignored, which is not what a
+# terminal does. Nothing polls: the reader blocks on nd-save's own output until
+# the prompt appears.
+d=$(new_glob_fixture)
+printf '{"plug":"abc"}\n' > "$d/home/.config/nv/lazy-lock.json"
+mkfifo "$d/in" "$d/out"
+set -m
+HOME="$d/home" ND_FLAKE="$d/repo" "$ND_SAVE" < "$d/in" > "$d/out" 2>&1 &
+save_pid=$!
+set +m
+exec 9> "$d/in"
+exec 8< "$d/out"
+buf=""
+while IFS= read -r -n1 -u 8 c; do
+  buf="$buf$c"
+  case "$buf" in *"proceed?"*) break ;; esac
+done
+kill -INT "$save_pid" 2> /dev/null
+wait "$save_pid"; st=$?
+exec 9>&-
+exec 8<&-
+check_status "an interrupted run exits 130" 130 "$st"
+check_empty "an interrupted run leaves the capture out of the index" \
+  "$(git -C "$d/repo" ls-files -- files/nv/lazy-lock.json)"
+rm -rf "$d"
+
+# An abort must not be greppable as a success. `check "drift is committed"
+# "committed"` below is exactly the grep a user writes, and the abort message
+# used to wrap onto a line beginning "nd-save: committed".
+d=$(new_fixture)
+drift "$d"
+out=$(printf 'n\n' | HOME="$d/home" ND_FLAKE="$d/repo" "$ND_SAVE" 2>&1)
+check_not "an abort never reads as a commit" "nd-save: committed" "$out"
+rm -rf "$d"
+
 # Credentials must stop the copy, not merely the commit: a secret copied into
 # the working tree and then refused is a secret waiting to be committed later.
 for secret in \
