@@ -37,6 +37,14 @@ let
       g = "lazy-lock.json";
       e = "lazy-lock\\.json";
     }
+    # `-` is emitted literally too, and that is what makes the ERE start with a
+    # dash. `nd-status` hands this straight to grep, which read it as options
+    # until `--` was added (E11); escaping it instead would only move the
+    # failure into `builtins.match`, which rejects `\-`.
+    {
+      g = "-foo/**";
+      e = "-foo/.*";
+    }
     # `]` is emitted literally, not as `\]`, which `builtins.match` rejects.
     {
       g = "[abc].lua";
@@ -324,6 +332,19 @@ let
       g = "a-b.txt";
       s = "a-b.txt";
       want = true;
+    }
+    # E11/E21: a pattern whose first character is a dash, which is the case that
+    # motivated the `--` in nd-status's grep calls. `tests/glob-engines.sh`
+    # re-runs this through `grep -qxE --`, so the case covers both engines.
+    {
+      g = "-foo/**";
+      s = "-foo/x";
+      want = true;
+    }
+    {
+      g = "-foo/**";
+      s = "x/-foo/y";
+      want = false;
     }
 
     # --- metacharacters combined with the wildcard tokens ---
