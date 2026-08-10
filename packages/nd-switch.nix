@@ -142,7 +142,7 @@ writeShellApplication {
         echo "nd-switch: the source these files were placed from cannot be read:" >&2
         printf '%s\n' "$unreadable" | sed 's/^/  /' >&2
         echo "nd-switch: whether they changed since cannot be told, and this switch will overwrite them." >&2
-        echo "nd-switch: copy anything you need aside by hand — nd-save cannot classify them either (E20)." >&2
+        echo "nd-switch: nd-save reports them too, and skips them — there is nothing it can compare." >&2
         echo "nd-switch: switching rewrites the manifest, which is what repairs this." >&2
       fi
 

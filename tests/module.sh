@@ -142,7 +142,16 @@ check_file_eq "the config raises no assertions" /dev/null "$ND_ASSERTION_FAILURE
 
 bad="$(cat "$ND_BAD_ASSERTION_FAILURES")"
 check "a missing glob source names the option" \
-  'programs.nd.globs.".config/gone".source = "nope" does not exist' "$bad"
+  'programs.nd.globs.".config/gone".source = "nope" must be a directory' "$bad"
+check "a missing glob source says it is missing" \
+  '"nope" must be a directory under programs.nd.sourceDir; it is missing.' "$bad"
+# A source that exists but is not a directory gets past pathExists and then
+# throws the same unattributed `cannot read directory …: Not a directory` the
+# assertion exists to replace.
+check "a glob source that is a file names the option" \
+  'programs.nd.globs.".config/notadir".source = "nv/init.lua" must be a directory' "$bad"
+check "a glob source that is a file says what it is" \
+  '"nv/init.lua" must be a directory under programs.nd.sourceDir; it is a regular.' "$bad"
 check "an empty pattern list names the option" \
   'programs.nd.globs.".config/empty".patterns is empty' "$bad"
 

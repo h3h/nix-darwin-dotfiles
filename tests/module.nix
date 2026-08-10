@@ -137,6 +137,14 @@ let
           source = "nv";
           patterns = [ ];
         };
+        # A source that exists but is not a directory gets past a bare
+        # pathExists and then throws `cannot read directory …: Not a directory`,
+        # which is the same unattributed failure the assertion exists to
+        # replace.
+        ".config/notadir" = {
+          source = "nv/init.lua";
+          patterns = [ "*" ];
+        };
       };
     }
   );

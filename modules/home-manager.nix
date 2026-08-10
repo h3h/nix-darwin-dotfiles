@@ -320,11 +320,24 @@ in
       destRoot: g: relPathAssertion "globs.\"${destRoot}\".source" g.source
     ) cfg.globs
     # lib.filesystem.listFilesRecursive on a missing path throws an evaluation
-    # error whose message does not name the option that caused it.
-    ++ lib.mapAttrsToList (destRoot: g: {
-      assertion = builtins.pathExists (cfg.sourceDir + "/${g.source}");
-      message = "programs.nd.globs.\"${destRoot}\".source = \"${g.source}\" does not exist under programs.nd.sourceDir.";
-    }) cfg.globs
+    # error whose message does not name the option that caused it. A path that
+    # exists but is not a directory gets past a bare pathExists and then throws
+    # the same class of unattributed error — `cannot read directory …: Not a
+    # directory` — so both cases are checked here rather than one.
+    ++ lib.mapAttrsToList (
+      destRoot: g:
+      let
+        src = cfg.sourceDir + "/${g.source}";
+      in
+      {
+        assertion = builtins.pathExists src && builtins.readFileType src == "directory";
+        message =
+          "programs.nd.globs.\"${destRoot}\".source = \"${g.source}\" must be a directory under "
+          + "programs.nd.sourceDir; it is "
+          + (if builtins.pathExists src then "a ${builtins.readFileType src}" else "missing")
+          + ".";
+      }
+    ) cfg.globs
     # An empty match set is not an error — a pattern that matches nothing today
     # but will match lazy-lock.json tomorrow is the expected state on a fresh
     # machine. An empty pattern list is, because it can never match anything.
