@@ -331,3 +331,110 @@ recorded), `unresolved` (escalated and still undecided at hand-off).
   `{ g = "-foo/**"; s = "-foo/x"; want = true; }` to `matches` in
   `tests/glob.nix` and drop nothing else — the case is already correct against
   `builtins.match`.
+
+## E12 — an answer that ended without a newline is not an answer
+- **Task:** adversarial review, finding F1
+- **Raised:** `read -r reply` returns non-zero at end of input, and `nd-save`
+  runs under `errexit`, so the script died before the `case` on every input
+  that ended without a newline. `printf 'n' | nd-save` printed nothing after
+  the prompt and left the intent-to-add entry in the index; `printf 'y' |
+  nd-save` exited 1 having copied the files and committed nothing. Bash still
+  assigns the partial line to `reply` in both cases, so the fix has a choice to
+  make: honour the partial answer, or discard it.
+- **Options:** (a) `if ! read -r reply; then reply=""; fi` — an unterminated
+  answer takes the default, which is no; (b) `read -r reply || true` — honour
+  whatever arrived, so `printf 'y'` commits.
+- **Status:** resolved
+- **Resolution:** (a). The three ways to reach a failed `read` are a pipe that
+  ended mid-answer, closed stdin (cron, a dead pipe, `< /dev/null`) and Ctrl-D.
+  None of them is a person saying yes to a commit, and two of them are the
+  unattended case, where the whole point of the prompt is that nobody agreed to
+  anything. `-y` exists for callers that mean yes. Under (b), `nd-save </dev/null`
+  in a script would commit whenever the config happened to contain a `y` — a
+  silent commit from an input that was never an answer, which is the same class
+  of surprise defect 3 was filed for. Tests pin all three doors, plus SIGINT.
+
+## E13 — restoring the index by snapshot rather than by path-scoped reset
+- **Task:** adversarial review, findings F1 and F2
+- **Raised:** E8's `unstage_captures` resets only the paths git did not already
+  know. That is correct for a decline, and it is not enough for a failed commit
+  (F2): by then `git add -- <paths>` has replaced whatever the user had staged
+  on a *tracked* managed path, and a path-scoped reset cannot put that content
+  back — it can only reset to HEAD, which discards it just as thoroughly.
+  Reproduced with a `pre-commit` hook that exits 1: `nd-save -y` exited 1 with
+  no diagnostic and `git diff --cached --name-only` listed the capture.
+- **Options:** (a) leave the tracked case unrecoverable and print a message
+  naming what is left staged; (b) snapshot `$GIT_DIR/index` before the first
+  mutation and copy it back on any exit that does not commit; (c) rebuild the
+  commit against a scratch `GIT_INDEX_FILE` so the real index is never touched.
+- **Status:** resolved
+- **Resolution:** (b), with (a) as the fallback. A byte copy of the index file
+  restores the exact prior state — intent-to-add entries, the user's staging of
+  a tracked managed path, everything — which is strictly more than the reset
+  can do, and it subsumes `unstage_captures` on every path that reaches it.
+  `unstage_captures` is kept and used when no snapshot could be taken: a
+  repository that has never staged anything has no index file to copy.
+  (c) is a larger rewrite of the commit step for no additional coverage, since
+  the working-tree copies still have to happen before the commit either way.
+
+  Two things this deliberately does not solve, recorded rather than hidden.
+  A concurrent `git add` in another terminal, between the snapshot and the
+  restore, is clobbered; the window is the length of one prompt, and the
+  path-scoped reset has the same exposure. And a `pre-commit` hook that stages
+  work of its own before failing has that staging discarded — the commit it was
+  staging for did not happen.
+
+## E14 — the unplaced-edit guard now fails closed on an undeterminable source
+- **Task:** adversarial review, finding F3
+- **Raised:** The defect-2 blocker looked the store source up with
+  `awk -F'\t' -v d="$dest" '$2 == d && $4 == ""'`. `awk -v` runs the assigned
+  value through escape processing, so a destination containing a backslash
+  (`.config/app/co\nfig.toml`) reached the comparison with the backslash
+  sequence expanded, never matched, and left `$src` empty. `[ -n "$src" ]` then
+  short-circuited the check: `nd-save -y` exited 0 and overwrote an unplaced
+  repo edit. Fixing the lookup (`ENVIRON`, which does no escape processing)
+  leaves the question the short-circuit was hiding: what should happen when the
+  store source genuinely cannot be determined?
+- **Options:** (a) keep skipping the check, i.e. copy over the repo file;
+  (b) treat an undeterminable source as a blocker whenever the repo already
+  holds a file at that path.
+- **Status:** resolved
+- **Resolution:** (b). "I cannot tell what was placed here" is not a reason to
+  overwrite a file, it is the reason not to; the whole point of the guard is
+  that the repo copy may be work that exists nowhere else. It cannot fire
+  spuriously in normal operation, either: `nd-status` only reports a path as
+  `drifted` on the strength of a manifest file record, so an empty `$src` means
+  the manifest disagrees with itself. It stays scoped to paths where the repo
+  file exists, because with nothing there, there is nothing to destroy.
+  `--force` still overrides, as it does for every other blocker.
+
+## E15 — a staged-only edit on a managed path: block, or document the gap
+- **Task:** adversarial review, finding F7
+- **Raised:** The defect-2 guard compares the working tree with the store and
+  never looks at the index. With staged content on a managed path and a working
+  tree that matches the store, `nd-save -y` runs `git add` over the path and the
+  staged blob becomes unreachable — not in the working tree, which the copy has
+  just overwritten, and not in any commit. The review left the call open:
+  extend the blocker, or document the gap in a source comment.
+- **Options:** (a) treat "this path has staged content differing from HEAD" as
+  a blocker, overridable by `--force`; (b) document it and leave it; (c) try to
+  preserve the staged blob, e.g. by stashing the index around the capture.
+- **Status:** resolved
+- **Resolution:** (a). Three reasons. It is the same loss defect 2 exists to
+  prevent — uncommitted work in the repo destroyed by a copy the preview shows
+  as though it were the only change — and the guard already refuses that loss
+  when it is one version to the left, in the working tree; refusing it there and
+  permitting it in the index is an inconsistency, not a policy. The test is one
+  command, `git diff --cached --quiet -- <path>`, and it is exact rather than
+  heuristic. And the false-positive cost is small and recoverable: the run
+  refuses, names the path, and `--force` is one flag away, whereas the failure
+  it prevents is silent and permanent.
+
+  (c) was rejected as the wrong shape. Preserving the blob means either
+  committing it (nd-save must never commit work the user did not offer it) or
+  stashing it, which moves the user's staging somewhere they did not put it and
+  have not been told about. Refusing hands the decision back to the person who
+  staged the content, which is where it belongs.
+
+  Note that E13's index snapshot does not cover this: the snapshot restores the
+  index when the run does *not* commit, and this case is a run that succeeds.
