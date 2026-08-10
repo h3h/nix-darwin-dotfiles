@@ -880,3 +880,82 @@ recorded), `unresolved` (escalated and still undecided at hand-off).
   after this one uses `git commit --only -- <paths>`, which is exactly the
   incantation Task 5 verified for `nd-save` and which nobody applied to the
   agents running it.
+
+## E25 — covering the module by stubbing home-manager rather than adding it as an input
+- **Task:** module test coverage
+- **Raised:** `modules/home-manager.nix` had no coverage of any kind. Every
+  manifest in `tests/run.sh` is written by hand, so the format `nd-status` has
+  ~190 cases against had never been compared with the code that writes it;
+  `globFileRecords`, `relOf`, `manifestText`, the defect 9 dry-run guard and the
+  `makeWrapper --set-default` wrappers were each exercised by nothing. The
+  end-to-end glob case even *simulates* the next evaluation by appending a
+  manifest line by hand. Running the module for real needs a home-manager
+  option surface, and this flake has no home-manager input.
+- **Options:** (a) add `home-manager` as a flake input and evaluate a real
+  `homeManagerConfiguration`; (b) `lib.evalModules` against a stub module
+  declaring only the options the module writes to; (c) keep asserting on
+  hand-written fixtures and leave the producer uncovered.
+- **Status:** resolved
+- **Resolution:** (b), as `tests/module.nix` + `tests/module.sh`, wired up as the
+  `module` flake check. A home-manager input is a large dependency, a second
+  lock entry to keep current, and a much slower check, for a gain that is
+  entirely about five options the module sets. The stub declares
+  `home.homeDirectory`, `home.packages`, `home.activation`,
+  `programs.zsh.initContent` and `assertions` and nothing else, so a typo in an
+  option name is an evaluation error rather than a silent no-op. `lib` is passed
+  through `specialArgs` because `evalModules` otherwise supplies its own
+  `_module.args.lib` and the module's `lib.hm.dag.entryAfter` call dies with
+  `attribute 'hm' missing`; the stub `lib` adds only that one function.
+
+  Three things this deliberately does not prove, recorded rather than implied:
+
+  - **home-manager's own semantics.** The activation script is sourced with a
+    reimplementation of home-manager's `run` — the `[[ -v DRY_RUN ]]` branch and
+    nothing else — so the check pins the module's use of `run`, not
+    home-manager's definition of it. If home-manager changed `run` to key off
+    something else, this check would stay green and defect 9 would come back.
+    The mitigation is that the spec records the `home-manager.sh` source it was
+    read from, and the DAG position (`after = [ "writeBoundary" ]`) is asserted.
+  - **Field 1 of a file record.** The expected manifest builds it with the same
+    `sourceDir + "/${rel}"` expression the module uses, so the case pins the
+    *format*, not the store hash. What the field points at is pinned instead by
+    the round trip, which places from it and then has the real `nd-status`
+    `cmp` against it.
+  - **A trailing slash in a `globs` key** (E18's still-open half for the
+    module). The check uses `.config/nv`, so `.config/nv/` — which `nd-status`
+    now normalises but the module still writes straight into the manifest — is
+    uncovered here too. It belongs with whoever settles E18.
+
+  Every case was falsified before being trusted: the manifest text, the pattern
+  filter, the glob-record emission, the dry-run guard, each `--set-default`,
+  `--set-default` versus `--set`, and the wrappers deleted outright. All eleven
+  mutations went red naming the right case; the wrapper deletion the review
+  predicted would "keep the suite green" now fails at evaluation with
+  `no nd-switch wrapper in home.packages: nd-switch nd-save nd-status`.
+
+## E26 — a `globs.<root>.source` that is a regular file dies without naming the option
+- **Task:** module test coverage (found while writing it)
+- **Raised:** The `pathExists` assertion beside `globs` exists because
+  `lib.filesystem.listFilesRecursive` on a missing path throws an error that
+  does not name the option responsible. A path that exists and is not a
+  directory gets past the assertion and throws the same *class* of error:
+
+  ```
+  programs.nd.globs.".config/nv" = { source = "nv/init.lua"; patterns = [ "*" ]; };
+  error: cannot read directory ".../tests/fixtures/src/nv/init.lua": Not a directory
+  ```
+
+  Nothing in that message says `programs.nd.globs`, and the whole home-manager
+  configuration fails to evaluate. `source = "nvim/init.lua"` is a plausible
+  mistake for someone reading the `files` option, whose values *are* file paths,
+  immediately above it.
+- **Options:** (a) fix it — the assertion becomes
+  `pathExists (…) && pathType (…) == "directory"`, or a second assertion says
+  "is not a directory"; (b) raise it for the module's owner.
+- **Status:** unresolved — **for the owner of `modules/home-manager.nix`**
+- **Resolution:** (b). `modules/` is outside this change's ownership and another
+  agent was live in the file. It is one line next to an assertion that already
+  exists for the neighbouring case, and the message should name the option and
+  say the source must be a directory. No test is added for it here: pinning the
+  current behaviour would mean asserting on the *unhelpful* message, which the
+  fix is meant to remove.
