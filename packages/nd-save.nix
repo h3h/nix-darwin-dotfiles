@@ -413,7 +413,27 @@ writeShellApplication {
     fi
 
     git -C "$flake" add -- "''${paths[@]}"
-    git -C "$flake" commit --only -m "$msg" -- "''${paths[@]}"
+
+    # A commit can fail for reasons that have nothing to do with nd-save: a
+    # pre-commit hook that rejects the content, commit.gpgsign with no key, a
+    # full disk. Under errexit that was a silent exit with the capture left
+    # fully staged — exactly the state a later `git commit -am` sweeps up. git
+    # has already said why on stderr; this says what it means for the repo.
+    if ! git -C "$flake" commit --only -m "$msg" -- "''${paths[@]}"; then
+      echo "nd-save: the commit failed, so nothing was committed." >&2
+      echo "nd-save: the files are still copied into the repo working tree." >&2
+      if [ -n "$index_backup" ]; then
+        echo "nd-save: the index is put back to what it was before this run." >&2
+      else
+        # No snapshot could be taken, so the tracked paths cannot be undone:
+        # `git add` replaced whatever was staged on them and only the user
+        # knows what that was. Name them rather than exit quietly.
+        echo "nd-save: the index could not be snapshotted, so these paths may be" >&2
+        echo "nd-save: left staged holding the captured content:" >&2
+        printf '%s\n' "''${paths[@]}" | sed 's/^/  /' >&2
+      fi
+      exit 1
+    fi
     committed=1
     echo "nd-save: committed. Not pushed."
   '';

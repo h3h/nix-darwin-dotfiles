@@ -381,6 +381,36 @@ check_empty "an interrupted run leaves the capture out of the index" \
   "$(git -C "$d/repo" ls-files -- files/nv/lazy-lock.json)"
 rm -rf "$d"
 
+# A commit can fail for reasons that have nothing to do with nd-save: a
+# pre-commit hook, commit.gpgsign with no key, a full disk. errexit turned that
+# into a silent exit 1 with the capture left staged — the state the user's next
+# `git commit -am` sweeps up.
+d=$(new_fixture)
+printf '#!/bin/sh\nexit 1\n' > "$d/repo/.git/hooks/pre-commit"
+chmod +x "$d/repo/.git/hooks/pre-commit"
+drift "$d"
+out=$(run_save "$d" -y); st=$?
+check "a failed commit is reported" "the commit failed" "$out"
+check_status "a failed commit exits 1" 1 "$st"
+check_not "a failed commit does not read as a success" "nd-save: committed" "$out"
+check_empty "a failed commit leaves nothing staged" "$(git -C "$d/repo" diff --cached --name-only)"
+check "a failed commit commits nothing" "initial" "$(git -C "$d/repo" log -1 --format=%s)"
+rm -rf "$d"
+
+# The asymmetry a path-scoped reset cannot fix: `git add` has already replaced
+# whatever the user staged on a *tracked* managed path, and resetting that path
+# would discard it just as thoroughly. The index snapshot is what puts it back.
+d=$(new_fixture)
+printf '#!/bin/sh\nexit 1\n' > "$d/repo/.git/hooks/pre-commit"
+chmod +x "$d/repo/.git/hooks/pre-commit"
+printf 'staged by me\n' > "$d/repo/files/config.toml"
+git -C "$d/repo" add files/config.toml
+drift "$d"
+out=$(run_save "$d" -y --force)
+check "the user's own staging survives a failed commit" "staged by me" \
+  "$(git -C "$d/repo" show :files/config.toml)"
+rm -rf "$d"
+
 # An abort must not be greppable as a success. `check "drift is committed"
 # "committed"` below is exactly the grep a user writes, and the abort message
 # used to wrap onto a line beginning "nd-save: committed".
