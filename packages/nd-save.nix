@@ -218,9 +218,22 @@ writeShellApplication {
     # the right question for a declared file and a meaningless one for a file
     # the application just invented, which has no store source at all — for
     # those the question is whether the repo already holds a file there.
+    #
+    # The index is the fourth version, and it counts for the same reason. The
+    # `git add` below replaces whatever is staged on a managed path, and staged
+    # content that differs from HEAD exists nowhere else afterwards: it is not
+    # in the working tree, which the copy has just overwritten, and it is not
+    # in a commit. Reaching this state takes a deliberate `git add` on a repo
+    # copy the application then rewrote live, so it is rare — and it is silent,
+    # which is what makes it worth a refusal rather than a comment.
     blockers=""
     while IFS="$tab" read -r kind dest repo_rel; do
       if [ -z "''${dest:-}" ]; then
+        continue
+      fi
+      if ! git -C "$flake" diff --cached --quiet -- "$repo_rel"; then
+        blockers="$blockers$repo_rel (staged content this capture would replace)
+    "
         continue
       fi
       case "$kind" in

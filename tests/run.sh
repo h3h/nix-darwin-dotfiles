@@ -492,6 +492,33 @@ check_status "that refusal exits 1" 1 "$st"
 check "the repo file survives" '"plug":"mine"' "$(cat "$d/repo/files/nv/lazy-lock.json")"
 rm -rf "$d"
 
+# The defect-2 guard compares the working tree with the store and never looks
+# at the index. A managed path whose staged content differs from HEAD, with a
+# working tree that matches the store, passed the guard — and then `git add`
+# replaced the staged blob with the captured content and the user's staged work
+# became unreachable. Same class of loss the guard exists to prevent.
+d=$(new_fixture)
+printf 'staged only\n' > "$d/repo/files/config.toml"
+git -C "$d/repo" add files/config.toml
+install -m 0644 "$d/store-source" "$d/repo/files/config.toml"
+drift "$d"
+out=$(run_save "$d" -y); st=$?
+check "a staged-only edit blocks the capture" "staged" "$out"
+check_status "the staged-only refusal exits 1" 1 "$st"
+check "the staged blob survives" "staged only" "$(git -C "$d/repo" show :files/config.toml)"
+check "the staged-only refusal commits nothing" "initial" "$(git -C "$d/repo" log -1 --format=%s)"
+rm -rf "$d"
+
+# --force remains the one escape hatch, and it has to open this door too.
+d=$(new_fixture)
+printf 'staged only\n' > "$d/repo/files/config.toml"
+git -C "$d/repo" add files/config.toml
+install -m 0644 "$d/store-source" "$d/repo/files/config.toml"
+drift "$d"
+out=$(run_save "$d" -y --force)
+check "--force overrides the staged-edit refusal" "copied back into the repo" "$out"
+rm -rf "$d"
+
 # `awk -v x=VAL` runs the value through escape processing, so a destination
 # containing a backslash never equalled $2: the store source came back empty
 # and `[ -n "$src" ]` short-circuited the whole blocker check. Defect 2's
