@@ -545,7 +545,7 @@ recorded), `unresolved` (escalated and still undecided at hand-off).
 - **Options:** (a) normalise in `nd-status` only; (b) normalise in
   `nd-status` and also reject or normalise the key in `modules/home-manager.nix`;
   (c) reject in the module only.
-- **Status:** resolved for `nd-status`, **open for the module**
+- **Status:** resolved
 - **Resolution:** (a) is implemented. `strip_trailing_slashes` normalises both
   the destination root and the repo root, and the relative path is now derived
   from the exact string `find` was given, so the strip cannot miss. A root that
@@ -561,6 +561,53 @@ recorded), `unresolved` (escalated and still undecided at hand-off).
   `programs.nd.globs` should either strip trailing slashes from its keys or
   assert against them, because a key of `.config/nv/` is a plausible typo that
   currently produces no evaluation error and a silently broken manifest.
+
+  **Module half, closed later by the owner of `modules/home-manager.nix`:**
+  (b), and **assert** rather than normalise. Three reasons.
+
+  Normalising in `nd-status` is not enough, which is the fact that settles it.
+  The `globs` key is the glob root *and* the prefix of every file record's
+  destination, and `nd-status` only normalises the former. So a key of
+  `.config/nv/` still writes `.config/nv//init.lua` into the file records, the
+  placed-membership test compares that against a scan result of
+  `.config/nv/init.lua`, and they do not match. Reproduced against the real
+  binary with a hand-built manifest carrying exactly what the module emits for
+  that key:
+
+  ```
+  $ HOME=$d/home nd-status
+  new	.config/nv/init.lua	files/nv/init.lua
+  ```
+
+  A placed, unmodified file reported `new`, on every run, forever — E18's
+  original symptom surviving E18's original fix. Normalising in the module
+  would fix it, but by then two places are quietly rewriting the user's key and
+  neither says so.
+
+  Second, an assertion naming the option is this module's established pattern
+  and its stated reason — the `pathExists` assertion exists precisely because
+  `listFilesRecursive`'s own error does not name the option. Third, silent
+  normalisation repairs half of a typo the user cannot see; the key is echoed
+  in no output, so a `globs` key that is not the one they wrote is a thing they
+  would discover from the manifest.
+
+  Scope: the same rule covers a leading `/` and an empty string, which are the
+  same class of error — they produce `$HOME//x` in the manifest and a git
+  pathspec that is not inside the repo — and it is applied to `globs` keys,
+  `globs.<key>.source`, `files` keys and `files` values, all four of which are
+  interpolated into the manifest verbatim. `repoSubdir` is deliberately left
+  alone: its own assertion already covers the empty case conditionally (E6),
+  and adding slash checks there means replicating that condition's laziness for
+  a case nobody has hit.
+
+  Verified by `lib.evalModules` with a stubbed `home.*`, `programs.zsh` and
+  `lib.hm.dag`, since the module had no harness at the time: all four surfaces
+  reported no failing assertion before the change and exactly one after, and
+  the valid config stayed clean. `tests/module.{nix,sh}` landed from another
+  agent while this was in flight and its 54 cases still pass; **the eight cases
+  above belong in it** — it already has the `failingMessages` plumbing and a
+  `bad` config to hang them on — and were not added there only because that
+  file was being written concurrently.
 
 ## E19 — an unreadable store source is its own kind, and does not block the switch
 - **Task:** `nd-status` robustness
@@ -627,9 +674,8 @@ recorded), `unresolved` (escalated and still undecided at hand-off).
   notice stays silent even though `nd-status` found something.
 - **Options:** (a) fix them here, out of ownership; (b) raise it and leave both
   as they are.
-- **Status:** unresolved — **for the owners of `packages/nd-save.nix` and
-  `modules/nd-notice.zsh`**
-- **Resolution:** (b). `packages/nd-save.nix` and `modules/` are outside this
+- **Status:** resolved
+- **Resolution:** (b) at the time. `packages/nd-save.nix` and `modules/` are outside this
   change's ownership and editing them would put two agents in the same files.
   What is needed:
 
@@ -648,6 +694,53 @@ recorded), `unresolved` (escalated and still undecided at hand-off).
   unreadable source, which is why its warning tells the user to copy the file
   aside by hand rather than pointing at `nd-save`.
 
+  **Closed later by the owners of the two files. All three parts done:**
+
+  1. `nd-save` reports `unreadable` the way it reports `missing` — names every
+     file, says whether they changed cannot be decided either way, says they are
+     skipped, and says the switch is what repairs it. That matches `nd-switch`,
+     which warns and proceeds for the same reason (E19: the switch is the
+     repair). It is not a blocker and not a candidate: there is nothing to copy
+     for a file whose store source cannot be opened. The "nothing to save" line
+     no longer claims "every placed file still matches" when something could not
+     be classified, because that sentence was false in exactly the case the
+     report had just described. Red first: `nd-save -y` against a fixture with
+     its store source deleted printed one line, `nd-save: nothing to save, every
+     placed file still matches`, and never named the file.
+
+  2. The `cmp -s` conflation in the unplaced-edit guard is fixed by splitting
+     exit 1 from exit ≥2, and the ≥2 arm is **still a blocker**. An unreadable
+     file *is* E14's case, not a different one: "the store source cannot be
+     determined" and "the store source cannot be read" leave the guard with the
+     same unanswered question — whether the repo copy holds work that was never
+     placed — and the guard exists because overwriting on an unanswered question
+     is how that work is lost. So the outcome is unchanged and only the sentence
+     is: it used to say `repo copy differs from what was placed`, blaming the
+     user's repo for a comparison that never happened, and now says `cannot be
+     compared with what was placed`. That is E19's misattribution, one program
+     to the right. The source comment says so, so the next reader does not
+     "simplify" the two arms back together. Red first, with a directory where
+     the repo file should be:
+
+     ```
+     cmp: …/repo/files/config.toml: Is a directory
+     nd-save: the repo carries edits that were never placed; nothing copied:
+       files/config.toml (repo copy differs from what was placed)
+     ```
+
+  3. `nd_notice`'s `case` has a default arm, plus an explicit `unreadable` arm,
+     and every arm now matches the kind up to the tab that ends the field. The
+     tab matters as much as the default: the arms were prefix matches, so a
+     future `newly-placed` would have been counted as `new` and reported under
+     the wrong word. Unknown kinds are counted as `unrecognised` rather than
+     folded into a neighbour, because "nd-status found something this notice
+     does not understand" is a different sentence from any of the four.
+
+  Two things done beyond what this entry asked for, both recorded in E22 and
+  E23: `nd-save` also gained the unknown-kind catch-all `nd-switch` has, and
+  `nd-switch`'s own `unreadable` message now names a limitation that no longer
+  exists.
+
 ## E21 — E11's `tests/glob.nix` case is still outstanding
 - **Task:** E11 close-out, hand-off
 - **Raised:** E11's resolution asked that, once `nd-status` passed `--` to grep,
@@ -656,10 +749,134 @@ recorded), `unresolved` (escalated and still undecided at hand-off).
   shell side end to end, but `tests/glob*.{nix,sh}` are outside this change's
   ownership.
 - **Options:** (a) add it anyway; (b) raise it for the owner.
-- **Status:** unresolved — **for the owner of `tests/glob.nix`**
-- **Resolution:** (b). The case is already correct against `builtins.match` —
+- **Status:** resolved
+- **Resolution:** (b) at the time. The case is already correct against `builtins.match` —
   E9's table shows `-` is not escaped and does not need to be — so it should
   pass on the first run; it exists to stop the escape table growing a `-` later,
   which would break the ERE for both engines. Nothing else in the glob checks
   needs to change: `tests/glob-engines.sh` already passes `--`, which is now
   what `nd-status` does.
+
+  **Closed later by the owner of `tests/glob.nix`.** Added to **both** lists,
+  which serve different purposes and both have something to say here.
+  `matches` gets `{ g = "-foo/**"; s = "-foo/x"; want = true; }`, the case E11
+  asked for, plus its negative `x/-foo/y`; that list is also the payload
+  `tests/glob-engines.sh` re-runs through `grep -qxE --`, so one case covers
+  both engines, which is the whole point of a pattern grep would otherwise read
+  as options. `translations` gets `{ g = "-foo/**"; e = "-foo/.*"; }`, because
+  the failure this guards against is the escape table growing a `-`, and the
+  translation list is where that shows up as a readable diff. In `matches`
+  alone it would surface as `error: invalid regular expression '\-foo/.*'` —
+  still red, but an aborted evaluation rather than a reported failure.
+
+  As predicted it was green on the first run, so it was verified by making it
+  fail: with `-` appended to the escape table in a scratch copy of
+  `lib/glob.nix`, `translationFailures` reported
+
+  ```
+  [{"e":"lazy-lock\\.json","g":"lazy-lock.json","got":"lazy\\-lock\\.json"},
+   {"e":"-foo/.*","g":"-foo/**","got":"\\-foo/.*"}]
+  ```
+
+  and `ok` was `false`. `lib/glob.nix` itself was not touched.
+
+## E22 — `nd-save` also gained the unknown-kind catch-all, which no test can reach
+- **Task:** E20 close-out
+- **Raised:** E20 asked for three things and this is a fourth. Having added an
+  `unreadable` branch to `nd-save`, the same silence is still one kind away: a
+  kind added after this `nd-save` was built matches neither the report greps nor
+  the candidate grep, and falls off the end into "nothing to save" exactly as
+  `unreadable` did. `nd-switch` already reports unknown kinds for that reason
+  (E19). Nothing in E20 asked for it in `nd-save`.
+- **Options:** (a) add the catch-all, knowing the suite cannot exercise it;
+  (b) leave it, on the grounds that untested code is not covered by anything and
+  E20 did not ask for it.
+- **Status:** resolved
+- **Resolution:** (a). The instruction for part 1 was to stay consistent with
+  `nd-switch`, and `nd-switch` reports both `unreadable` and unknown kinds; a
+  consumer that learns the fourth kind and not the lesson is one release from
+  the same bug. It also cost one `grep -vE` and one `if`, and it is the only
+  thing standing between a future fifth kind and total silence from `nd-save`.
+
+  Two smaller changes went with it, both consequences rather than additions.
+  Every kind grep is now anchored to the field separator (`^missing$tab`, not
+  `^missing`), because a catch-all that defines itself as "not one of these
+  four" is only correct if "one of these four" is exact — otherwise a kind
+  called `newly-placed` is both a candidate and not unknown. And the "nothing to
+  save" line has a second wording for the case where something could not be
+  classified, since "every placed file still matches" was a claim the run had
+  just contradicted.
+
+  **Not covered by a test, and cannot be.** `nd-status` reaches `nd-save`
+  through `runtimeInputs`, which prepends to `PATH`, so the suite cannot
+  substitute a stub that emits an invented kind — the same limitation E19
+  recorded for `nd-switch`. The zsh notice does not have it: `nd_notice` resolves
+  `nd-status` from the caller's `PATH`, so its catch-all is pinned by two cases
+  with a stub `nd-status`, one emitting `invented` and one emitting `newfangled`
+  to prove the arms are not prefix matches.
+
+## E23 — `nd-switch`'s unreadable warning and the README now describe a fixed limitation
+- **Task:** E20 close-out, hand-off
+- **Raised:** `packages/nd-switch.nix:145` reads:
+
+  ```sh
+  echo "nd-switch: copy anything you need aside by hand — nd-save cannot classify them either (E20)." >&2
+  ```
+
+  That sentence was true when it was written and is not any more: `nd-save` now
+  names every unreadable file, says the classification cannot be made, and skips
+  it. Telling the user to copy files aside by hand is still right — nothing can
+  save a file whose store source cannot be read — but "nd-save cannot classify
+  them either" now points at a closed escalation as though it were open, and a
+  message citing `(E20)` will outlive anyone's memory of what E20 was.
+  `README.md:267` separately says the suite has 193 cases; it has 210.
+- **Options:** (a) fix both here; (b) raise them for their owners.
+- **Status:** unresolved — **for the owner of `packages/nd-switch.nix` and the
+  README**
+- **Resolution:** (b). `packages/nd-switch.nix` is explicitly not mine to touch
+  in this change and another agent was in `flake.nix` at the same time; the
+  README is nobody's declared file here and its test count goes stale on almost
+  every commit, so correcting it in isolation invites a conflict for a number
+  that will be wrong again shortly. Neither is a defect — both are stale prose
+  next to correct behaviour. What is needed: drop `— nd-save cannot classify
+  them either (E20)` from that line, keep the rest, and refresh the README's
+  case count when the suite next settles.
+
+## E24 — a shared git index put another agent's staged work in my commit
+- **Task:** E20 close-out, process
+- **Raised:** Two agents were working in one working tree. `git add <my files>`
+  followed by a bare `git commit` commits **the whole index**, not the paths
+  just added, and the index already held the other agent's staged
+  `flake.nix`, `tests/module.nix`, `tests/module.sh` and
+  `tests/fixtures/src/app/config.toml`. They are now inside commit `5c21230`,
+  whose subject is about `nd-save` and says nothing about any of them:
+
+  ```
+  $ git show --stat --format= 5c21230
+   flake.nix                          |  35 +++++
+   packages/nd-save.nix               |  70 ++++++++-
+   tests/fixtures/src/app/config.toml |   1 +
+   tests/module.nix                   | 210 ++++++++++++++++++++++++++
+   tests/module.sh                    | 296 +++++++++++++++++++++++++++++++++++++
+   tests/run.sh                       |  50 +++++++
+  ```
+
+  This is defect 1 — the failure `nd-save` was rewritten to prevent, a commit
+  whose message describes one thing and whose contents include somebody else's
+  uncommitted work — committed by hand, in this repository, while closing an
+  escalation about it. No content was lost; the attribution is wrong and the
+  other agent's index state is gone.
+- **Options:** (a) rewrite the two commits to move those paths back out and
+  re-stage them; (b) leave the history alone, say so loudly, and use
+  `git commit --only -- <paths>` from here on.
+- **Status:** resolved
+- **Resolution:** (b). A rewrite is only safe if nobody else's index or
+  worktree moves while it happens, and the premise here is that somebody else's
+  does — the other agent was live in the same tree, and rewriting two commits
+  under an agent that may be mid-`git add` trades a wrong commit subject for a
+  lost or duplicated file. Nothing was destroyed: every line of their work is in
+  `5c21230` and their subsequent `nix flake check` passes, so the cost is an
+  inaccurate subject and an index they will find already committed. Every commit
+  after this one uses `git commit --only -- <paths>`, which is exactly the
+  incantation Task 5 verified for `nd-save` and which nobody applied to the
+  agents running it.
