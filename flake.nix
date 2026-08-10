@@ -63,6 +63,41 @@
                 touch $out
               '';
 
+          # modules/home-manager.nix, evaluated for real through lib.evalModules
+          # against a stubbed home-manager option surface. Covers the manifest
+          # it writes, the files its activation script places, the dry-run
+          # guard, the ND_* wrappers, and — feeding the first to the third — a
+          # round trip through the real nd-status.
+          module =
+            let
+              m = import ./tests/module.nix {
+                inherit (pkgs) lib;
+                inherit pkgs self;
+              };
+            in
+            pkgs.runCommand "nd-module-tests" { } ''
+              export ND_ACTIVATION="${m.activation}"
+              export ND_ACTIVATION_SPARSE="${m.activationSparse}"
+              export ND_ACTIVATION_AFTER="${m.activationAfter}"
+              export ND_EXPECTED_MANIFEST="${m.expectedManifest}"
+              export ND_EXPECTED_SPARSE_MANIFEST="${m.expectedSparseManifest}"
+              export ND_ZSH_INIT="${m.zshInit}"
+              export ND_PACKAGE_NAMES="${m.packageNames}"
+              export ND_ASSERTION_FAILURES="${m.assertionFailures}"
+              export ND_BAD_ASSERTION_FAILURES="${m.badAssertionFailures}"
+              export ND_WRAP_SWITCH="${m.wrapSwitch}"
+              export ND_WRAP_SAVE="${m.wrapSave}"
+              export ND_WRAP_STATUS="${m.wrapStatus}"
+              export ND_WRAP_NOBRANCH_SAVE="${m.wrapNoBranchSave}"
+              export ND_STATUS_BIN="${self.packages.${system}.nd-status}/bin/nd-status"
+              export ND_HOME_DIRECTORY="${m.homeDirectory}"
+              export ND_FLAKE_PATH="${m.flakePath}"
+              export ND_EXPECTED_BRANCH_VALUE="${m.expectedBranch}"
+              export ND_MANIFEST_PATH="${m.manifestPath}"
+              bash ${./tests/module.sh}
+              touch $out
+            '';
+
           glob =
             let
               r = import ./tests/glob.nix { inherit (pkgs) lib; };

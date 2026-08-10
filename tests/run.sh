@@ -802,6 +802,56 @@ for benign in \
   rm -rf "$d"
 done
 
+# E20. `unreadable` is neither drifted nor new, so it matched no work-list
+# pattern and matched no report either: nd-save said "nothing to save" about a
+# file the next switch is going to overwrite. It is reported the way `missing`
+# is — named, explained, skipped — because there is genuinely nothing nd-save
+# can do with a file it cannot classify.
+d=$(new_fixture)
+rm -f "$d/store-source"
+out=$(run_save "$d" -y); st=$?
+check "an unreadable source is reported" "cannot be read" "$out"
+check "the unreadable file is named" ".config/app/config.toml" "$out"
+check_status "an unreadable source alone exits 0" 0 "$st"
+check "an unreadable source still means nothing to save" "nothing to save" "$out"
+check_not "an unreadable source is not claimed to still match" "every placed file still matches" "$out"
+rm -rf "$d"
+
+# One entry nd-status could not classify must not stop the ones it could.
+d=$(new_fixture)
+printf 'other = 1\n' > "$d/store-other"
+chmod 0444 "$d/store-other"
+install -m 0644 "$d/store-other" "$d/home/.config/app/other.toml"
+install -m 0644 "$d/store-other" "$d/repo/files/other.toml"
+git -C "$d/repo" add -A
+git -C "$d/repo" commit -qm "add other"
+printf '%s\t%s\t%s\n' "$d/store-other" ".config/app/other.toml" "files/other.toml" \
+  >> "$d/home/.local/state/nd/manifest"
+rm -f "$d/store-source"
+printf 'other = 2\n' > "$d/home/.config/app/other.toml"
+out=$(run_save "$d" -y)
+check "an unreadable entry is reported alongside a save" "cannot be read" "$out"
+check "the classifiable entry is still committed" "files/other.toml" "$(git -C "$d/repo" show --stat --format= HEAD)"
+check_not "the unreadable entry is not committed" "files/config.toml" "$(git -C "$d/repo" show --stat --format= HEAD)"
+rm -rf "$d"
+
+# E20. cmp exits 2 when it cannot read one of its arguments, and the unplaced-
+# edit guard read that as "the repo copy differs" — blaming the user's repo for
+# a comparison that never happened, which is the misattribution E19 removed from
+# nd-status. Refusing is right either way (E14: the guard fails closed when it
+# cannot tell what was placed), so what was wrong is the reason it gave.
+d=$(new_fixture)
+rm -f "$d/repo/files/config.toml"
+mkdir -p "$d/repo/files/config.toml"
+drift "$d"
+out=$(run_save "$d" -y); st=$?
+check "an uncomparable repo copy is refused" "never placed" "$out"
+check "the refusal says the comparison could not be made" "cannot be compared with what was placed" "$out"
+check_not "the refusal does not blame the repo copy" "repo copy differs" "$out"
+check_status "an uncomparable repo copy exits 1" 1 "$st"
+check "an uncomparable repo copy stops the copy" "initial" "$(git -C "$d/repo" log -1 --format=%s)"
+rm -rf "$d"
+
 echo "nd-status"
 
 d=$(new_fixture)

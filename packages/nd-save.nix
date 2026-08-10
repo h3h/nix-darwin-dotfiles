@@ -150,8 +150,18 @@ writeShellApplication {
     tab="$(printf '\t')"
     status="$(nd-status)"
 
-    missing="$(printf '%s\n' "$status" | grep '^missing' | cut -f2 || true)"
-    candidates="$(printf '%s\n' "$status" | grep -E '^(drifted|new)' || true)"
+    # Every kind is matched anchored to the field separator, so a kind added
+    # later whose name merely begins with one of these — "newly-placed" — is not
+    # silently filed under it.
+    missing="$(printf '%s\n' "$status" | grep "^missing$tab" | cut -f2 || true)"
+    unreadable="$(printf '%s\n' "$status" | grep "^unreadable$tab" | cut -f2 || true)"
+    candidates="$(printf '%s\n' "$status" | grep -E "^(drifted|new)$tab" || true)"
+    # Anything else is a kind this nd-save predates. Naming it beats dropping
+    # it, which is exactly how `unreadable` disappeared into "nothing to save"
+    # when nd-status grew it. nd-switch reports unknown kinds for the same
+    # reason; this is the same catch-all on the save side.
+    unknown="$(printf '%s\n' "$status" | grep -v '^$' \
+      | grep -vE "^(drifted|missing|new|unreadable)$tab" || true)"
 
     if [ -n "$missing" ]; then
       echo "nd-save: these managed files are gone; there is nothing to save for them:"
@@ -160,8 +170,33 @@ writeShellApplication {
       echo
     fi
 
+    # Reported like `missing`, and skipped for the same reason: there is nothing
+    # to save for a file whose store source cannot be opened, because whether it
+    # drifted at all cannot be decided. Saying nothing was worse than saying
+    # this — the old run ended at "nothing to save" about a file the next switch
+    # will overwrite.
+    if [ -n "$unreadable" ]; then
+      echo "nd-save: the source these files were placed from cannot be read:"
+      printf '%s\n' "$unreadable" | sed 's/^/  /'
+      echo "nd-save: whether they changed since cannot be told either way, so they are skipped."
+      echo "nd-save: copy anything you need aside by hand. Switching rewrites the manifest,"
+      echo "nd-save: which is what repairs this."
+      echo
+    fi
+
+    if [ -n "$unknown" ]; then
+      echo "nd-save: nd-status reported kinds this nd-save does not know, and skipped them:"
+      printf '%s\n' "$unknown" | sed 's/^/  /'
+      echo "nd-save: nd-save and nd-status may be out of step."
+      echo
+    fi
+
     if [ -z "$candidates" ]; then
-      echo "nd-save: nothing to save, every placed file still matches"
+      if [ -n "$unreadable" ] || [ -n "$unknown" ]; then
+        echo "nd-save: nothing to save; every file that could be classified still matches"
+      else
+        echo "nd-save: nothing to save, every placed file still matches"
+      fi
       exit 0
     fi
 
@@ -261,9 +296,34 @@ writeShellApplication {
               blockers="$blockers$repo_rel (cannot tell what was placed here)
     "
             fi
-          elif [ -e "$flake/$repo_rel" ] && ! cmp -s "$src" "$flake/$repo_rel"; then
-            blockers="$blockers$repo_rel (repo copy differs from what was placed)
+          elif [ -e "$flake/$repo_rel" ]; then
+            # cmp exits 1 for "they differ" and 2 for "I could not read one of
+            # them" — a store source that has gone away, or a repo path that is
+            # a directory or unreadable. Conflating them refused with the wrong
+            # sentence: it told the user their repo copy differed from a file
+            # that was never compared, which is the misattribution E19 took out
+            # of nd-status.
+            #
+            # It refuses either way, and deliberately so: this is E14's case,
+            # not a different one. "The store source cannot be determined" and
+            # "the store source cannot be read" leave the guard with the same
+            # unanswered question — whether the repo copy holds work that was
+            # never placed — and the guard exists because overwriting on an
+            # unanswered question is how that work is lost. --force still
+            # overrides, as it does for every other blocker.
+            cmp_st=0
+            cmp -s "$src" "$flake/$repo_rel" || cmp_st=$?
+            case "$cmp_st" in
+              0) ;;
+              1)
+                blockers="$blockers$repo_rel (repo copy differs from what was placed)
     "
+                ;;
+              *)
+                blockers="$blockers$repo_rel (cannot be compared with what was placed)
+    "
+                ;;
+            esac
           fi
           ;;
       esac
