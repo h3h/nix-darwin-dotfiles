@@ -627,6 +627,27 @@ run_save "$d" -y > /dev/null
 check "two apps are both named" "Save config written by app and zed" "$(git -C "$d/repo" log -1 --format=%s)"
 rm -rf "$d"
 
+# The list of applications was joined with `paste -sd'|'` and then split again
+# on the same character, so an application token containing a pipe came out as
+# two applications. A path component can contain any character but `/`, so no
+# delimiter is safe: the join must not need one.
+d=$(new_fixture)
+mkdir -p "$d/home/.config/we|ird" "$d/repo/files/we|ird"
+printf 'a\n' > "$d/store-source-pipe"
+chmod 0444 "$d/store-source-pipe"
+install -m 0644 "$d/store-source-pipe" "$d/home/.config/we|ird/settings.json"
+install -m 0644 "$d/store-source-pipe" "$d/repo/files/we|ird/settings.json"
+printf '%s\t%s\t%s\n' "$d/store-source-pipe" ".config/we|ird/settings.json" "files/we|ird/settings.json" \
+  >> "$d/home/.local/state/nd/manifest"
+git -C "$d/repo" add -A
+git -C "$d/repo" commit -qm "add the pipe app"
+drift "$d"
+printf 'b\n' > "$d/home/.config/we|ird/settings.json"
+run_save "$d" -y > /dev/null
+check "a pipe in an app name is not split into two apps" "Save config written by app and we|ird" \
+  "$(git -C "$d/repo" log -1 --format=%s)"
+rm -rf "$d"
+
 # A destination outside .config/ derives from the basename.
 d=$(new_fixture)
 printf 'x\n' > "$d/store-source-3"

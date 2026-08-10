@@ -55,7 +55,7 @@ writeShellApplication {
     }
 
     derive_subject() {
-      local apps n list head tail
+      local apps n rest last
       apps="$(printf '%s' "$copied" | sed '/^[[:space:]]*$/d' | while IFS= read -r d; do
         app_of "$(printf '%s' "$d" | sed 's/^[[:space:]]*//')"
         printf '\n'
@@ -68,10 +68,17 @@ writeShellApplication {
         return 0
       fi
 
-      list="$(printf '%s\n' "$apps" | sed '/^$/d' | paste -sd'|' - | sed 's/|/, /g')"
-      head="''${list%, *}"
-      tail="''${list##*, }"
-      printf 'Save config written by %s and %s' "$head" "$tail"
+      # Joining on a delimiter and splitting the result back apart means
+      # picking a character the data cannot contain, and an application token
+      # is a path component: the only character it cannot contain is "/", which
+      # would read badly in a commit subject. So the last token is taken off
+      # the list before the rest are joined, and nothing is ever un-joined —
+      # `paste -sd'|'` followed by `sed 's/|/, /g'` turned one application
+      # called "we|ird" into two called "we" and "ird".
+      last="$(printf '%s\n' "$apps" | sed '/^$/d' | tail -n 1)"
+      rest="$(printf '%s\n' "$apps" | sed '/^$/d' | sed '$d' |
+        awk 'NR > 1 { printf ", " } { printf "%s", $0 } END { print "" }')"
+      printf 'Save config written by %s and %s' "$rest" "$last"
     }
 
     while [ $# -gt 0 ]; do
