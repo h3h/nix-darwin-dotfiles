@@ -411,6 +411,38 @@ check "the user's own staging survives a failed commit" "staged by me" \
   "$(git -C "$d/repo" show :files/config.toml)"
 rm -rf "$d"
 
+# The restore has to know that a commit happened, and "the commit returned 0"
+# is not the same instant as "nd-save recorded that it did": bash runs a
+# pending signal trap between the two. A post-commit hook that signals nd-save
+# reproduces that window exactly — the commit is made, and the run still ends
+# through the trap. Restoring the index there would revert the capture that is
+# already in HEAD.
+d=$(new_fixture)
+drift "$d"
+mkfifo "$d/in" "$d/out"
+set -m
+HOME="$d/home" ND_FLAKE="$d/repo" "$ND_SAVE" < "$d/in" > "$d/out" 2>&1 &
+save_pid=$!
+set +m
+printf '#!/bin/sh\nkill -INT %s\n' "$save_pid" > "$d/repo/.git/hooks/post-commit"
+chmod +x "$d/repo/.git/hooks/post-commit"
+exec 9> "$d/in"
+exec 8< "$d/out"
+buf=""
+while IFS= read -r -n1 -u 8 c; do
+  buf="$buf$c"
+  case "$buf" in *"proceed?"*) break ;; esac
+done
+printf 'y\n' >&9
+wait "$save_pid"
+exec 9>&-
+exec 8<&-
+check "the interrupted commit was still made" "files/config.toml" \
+  "$(git -C "$d/repo" show --stat --format= HEAD)"
+check_empty "an interrupt after the commit does not revert the index" \
+  "$(git -C "$d/repo" status --porcelain -- files/config.toml)"
+rm -rf "$d"
+
 # An abort must not be greppable as a success. `check "drift is committed"
 # "committed"` below is exactly the grep a user writes, and the abort message
 # used to wrap onto a line beginning "nd-save: committed".

@@ -393,9 +393,20 @@ writeShellApplication {
     #
     # SIGINT is trapped only so that the EXIT trap runs at all; bash does not
     # run an EXIT trap when it dies of an untrapped signal.
+    #
+    # "The commit returned 0" and "nd-save recorded that it did" are not the
+    # same instant: bash runs a pending signal trap between two commands, so a
+    # Ctrl-C landing inside the commit ends the run through the trap with the
+    # commit already made. Restoring the index there would revert a capture
+    # that is in HEAD, so the flag is backed by an invariant — if HEAD moved,
+    # this run committed, whatever the flag says.
+    head_before="$(git -C "$flake" rev-parse --verify --quiet HEAD || true)"
+
     committed=""
     on_exit() {
-      if [ -z "$committed" ]; then
+      local head_now
+      head_now="$(git -C "$flake" rev-parse --verify --quiet HEAD || true)"
+      if [ -z "$committed" ] && [ "$head_now" = "$head_before" ]; then
         restore_index
       fi
       if [ -n "$index_backup" ]; then
