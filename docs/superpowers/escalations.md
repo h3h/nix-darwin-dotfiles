@@ -323,14 +323,33 @@ recorded), `unresolved` (escalated and still undecided at hand-off).
 - **Options:** (a) fix `nd-status.nix`; (b) drop the `--` from the test script so
   the check reflects what `nd-status` actually runs, and add a leading-`-` case;
   (c) report it and leave both as they are.
-- **Status:** open
-- **Resolution:** (c) for now, because `packages/nd-status.nix` is owned by
-  another agent working concurrently and (b) would land a red check against a
-  defect this change cannot fix. The one-character fix is to add `--` before
-  `"$ere"` at both call sites; once that lands, add
-  `{ g = "-foo/**"; s = "-foo/x"; want = true; }` to `matches` in
-  `tests/glob.nix` and drop nothing else — the case is already correct against
-  `builtins.match`.
+- **Status:** resolved
+- **Resolution:** (a), fixed in `packages/nd-status.nix`. `--` now precedes the
+  pattern at both call sites: `grep -qxE -- "$ere"` for the pattern match and
+  `grep -qxF -- "$dest_prefix$rel"` for the placed-membership test. The second
+  was not in the original report and has the same exposure, for a destination
+  root beginning with `-`.
+
+  Reproduced first against the unfixed binary, with `-foo/.*` added as a fourth
+  glob record and `.config/nv/-foo/a.txt` created under the root:
+
+  ```
+  grep: oo/.*: No such file or directory
+  grep: oo/.*: No such file or directory
+  grep: oo/.*: No such file or directory
+  grep: oo/.*: No such file or directory
+  new	.config/nv/new1.lua	files/nv/new1.lua
+  ```
+
+  Four errors, one per file under the root, and `-foo/a.txt` reported by
+  nothing. Pinned by `a pattern starting with a dash still matches` and
+  `a pattern starting with a dash is not read as options` in `tests/run.sh`,
+  both confirmed red against the unfixed `nd-status`.
+
+  Option (b) is now moot: `tests/glob-engines.sh` already passes `--`, which is
+  what `nd-status` does, so the check and the program agree. **Still outstanding
+  and not mine to do** — see E21 for the `tests/glob.nix` case the original
+  report asked for.
 
 ## E12 — an answer that ended without a newline is not an answer
 - **Task:** adversarial review, finding F1
@@ -438,3 +457,209 @@ recorded), `unresolved` (escalated and still undecided at hand-off).
 
   Note that E13's index snapshot does not cover this: the snapshot restores the
   index when the run does *not* commit, and this case is a run that succeeds.
+
+## E16 — `--allow-dirty` names what it discards, and does not back it up
+- **Task:** defect 10
+- **Raised:** The issues document's fix for defect 10 says "consider copying
+  each drifted file to `<path>.nd-bak` first, mirroring home-manager's own
+  `backupFileExtension`", and the spec defers the question here rather than
+  settling it. The list-and-warn half is not in doubt; the backup half is.
+- **Options:** (a) warn only — name every drifted file, say the contents will be
+  discarded, proceed; (b) also copy each drifted file to `<path>.nd-bak`;
+  (c) offer the backup behind a new flag or a `programs.nd` option.
+- **Status:** resolved
+- **Resolution:** (a), warn only. No `.nd-bak`, no new flag, no option, no
+  change to `modules/`. Two reasons, both about the copy being wrong rather than
+  merely unnecessary.
+
+  `nd-switch` does not perform the overwrite — activation does, several minutes
+  and two failure points later. A copy taken here is stale the moment `nix
+  build` fails, the sudo prompt is refused, or activation itself dies, and a
+  stale `.nd-bak` sitting beside a file that was never touched is worse than no
+  backup: it reads as a record of an overwrite that did not happen.
+
+  And a `.nd-bak` inside a glob root can match the user's own pattern.
+  `colors/**` matches `colors/x.vim.nd-bak`, so `nd-status` would report the
+  backup as `new` and `nd-save` would capture it into the repo and commit it.
+  The mechanism meant to protect the file would put a copy of it somewhere the
+  user never asked for, permanently.
+
+  The warning is the whole fix: it names every file, says the contents will be
+  discarded, points at `nd-save`, and prints before `nix build` and before the
+  sudo prompt, so there is still something to interrupt. `nd-save` is the
+  backup, and it is one command away.
+
+## E17 — a rollback warns about drift but is not gated by it
+- **Task:** defect 10, second door (found during review, not in the issues file)
+- **Raised:** `packages/nd-switch.nix`'s `--rollback` branch returned before the
+  drift check was ever reached, so `nd-switch --rollback` ran
+  `sudo darwin-rebuild switch --rollback`, activation overwrote every drifted
+  file, and nothing was printed. Defect 10's loss, through a door
+  `--allow-dirty` does not guard. Reproduced against the unfixed binary with a
+  drifted fixture and a stub `sudo`:
+
+  ```
+  nd-switch: rolling back one generation from 56
+  stub sudo darwin-rebuild switch --rollback
+  nd-switch: done. Relaunch your terminal fully if PATH or packages changed.
+  ```
+
+  Not one word about the drifted file it was about to discard.
+- **Options:** (a) warn and proceed, the same list-and-warn the `--allow-dirty`
+  path now gets; (b) gate it as the ordinary switch is gated, with
+  `--allow-dirty` as the override; (c) gate it with its own override.
+- **Status:** resolved for the warning, **open for the gate**
+- **Resolution:** (a) is implemented. `report_status "--rollback"` runs at the
+  top of the rollback branch, before `readlink` and well before `sudo`, and
+  prints the same "will be OVERWRITTEN … contents will be discarded" block the
+  `--allow-dirty` path prints. It does not refuse.
+
+  The reason not to gate is that a rollback is what you reach for when something
+  is already broken, and the tool refusing to run the repair because a config
+  file drifted is the wrong trade — especially since the drift may be a
+  consequence of whatever you are rolling back from.
+
+  **This half is a genuine open question and I did not settle it.** The argument
+  the other way is real: an ordinary switch and a rollback destroy drifted
+  content identically, `--allow-dirty` already exists as the override, and
+  "warn on one path, refuse on the other" is an inconsistency a user has to
+  learn rather than derive. Whether `--rollback` should honour the gate with
+  `--allow-dirty` as its escape hatch is the maintainer's call. If it changes,
+  `--rollback is not blocked` and `--rollback still rolls back` in `tests/run.sh`
+  are the two cases that encode the current answer.
+
+## E18 — a trailing slash in a `globs` key is normalised in `nd-status`, not rejected
+- **Task:** `nd-status` robustness
+- **Raised:** `scan_glob` computed `rel="${f#"$HOME/$root/"}"`. With a `globs`
+  key of `.config/nv/`, `root` is `.config/nv/`, the prefix `$HOME/.config/nv//`
+  never matches, and `rel` stays absolute. Observed against the unfixed binary:
+
+  ```
+  new	.config/nv///var/folders/…/home/.config/nv/init.lua	files/nv//var/folders/…/home/.config/nv/init.lua
+  ```
+
+  Every placed file is reported `new` forever, because the membership test
+  against `placed` cannot match either, and `nd-save` would `mkdir -p` and
+  `install` that path inside the repo — an absolute path grafted under the repo
+  root.
+- **Options:** (a) normalise in `nd-status` only; (b) normalise in
+  `nd-status` and also reject or normalise the key in `modules/home-manager.nix`;
+  (c) reject in the module only.
+- **Status:** resolved for `nd-status`, **open for the module**
+- **Resolution:** (a) is implemented. `strip_trailing_slashes` normalises both
+  the destination root and the repo root, and the relative path is now derived
+  from the exact string `find` was given, so the strip cannot miss. A root that
+  normalises away entirely is handled by moving the separator into a prefix
+  variable rather than the format string. Pinned by
+  `a trailing slash in the root still yields relative paths` and its two
+  siblings, all red against the unfixed binary.
+
+  `nd-status` has to be robust here regardless of what the module does, because
+  the manifest is a plain text file a user can edit and a truncated write can
+  damage. But (b) is the better whole answer and I could not implement it:
+  `modules/` is outside this change's ownership. **For the module's owner:**
+  `programs.nd.globs` should either strip trailing slashes from its keys or
+  assert against them, because a key of `.config/nv/` is a plausible typo that
+  currently produces no evaluation error and a silently broken manifest.
+
+## E19 — an unreadable store source is its own kind, and does not block the switch
+- **Task:** `nd-status` robustness
+- **Raised:** `cmp -s` exits 1 for "they differ" and 2 for "I could not read
+  one of them", and `! cmp -s` treats both as drift. With the store source
+  deleted, `nd-status` reported `drifted` and `nd-save` then blamed the user's
+  repo for a difference from a file neither of them could open:
+
+  ```
+  drifted	.config/app/config.toml	files/config.toml
+  nd-save: the repo carries edits that were never placed; nothing copied:
+    files/config.toml (repo copy differs from what was placed)
+  ```
+
+  Distinguishing the two exit statuses is not in question. What the new kind
+  should be called, and whether `nd-switch` should refuse on it, are.
+- **Options:** for the name, `unreadable` / `unknown` / `unresolvable`. For the
+  gate: (a) warn and proceed; (b) block as `drifted` blocks, with
+  `--allow-dirty` as the override; (c) block with no override.
+- **Status:** resolved
+- **Resolution:** `unreadable`, and (a) warn and proceed.
+
+  The name says what is true and nothing more — the source could not be opened —
+  rather than `unknown`, which in this program would collide with "a kind the
+  reader does not recognise", which is a different thing that `nd-switch` now
+  also reports.
+
+  Warn rather than block, for one decisive reason: the switch is the repair.
+  Activation rewrites the manifest with the current generation's store paths, so
+  the unreadable source stops being unreadable precisely by switching. Blocking
+  would leave the tool unable to fix its own broken state, with no route out but
+  `--allow-dirty` — which is the flag for "discard my drift", a thing the user
+  has not been shown any evidence of. E14 reached the opposite conclusion for
+  `nd-save` on a superficially similar "I cannot tell" case, and the difference
+  is exactly this: there, refusing preserved repo work that existed nowhere
+  else and there was no repair path; here, refusing preserves nothing and
+  blocks the repair.
+
+  The warning is loud, names every file, says the switch will overwrite them,
+  and says the classification cannot be made either way. Pinned by five cases
+  under `an unreadable source …` in `tests/run.sh`.
+
+  `nd-switch` also now reports any kind it does not recognise, rather than
+  dropping the line, so a newer `nd-status` paired with an older `nd-switch`
+  cannot lose a whole category in silence. That branch is not covered by a test:
+  `nd-status` comes from `runtimeInputs`, which precedes the caller's `PATH`, so
+  the suite cannot substitute a stub that emits an invented kind.
+
+## E20 — `nd-save` and the zsh notice both drop the `unreadable` kind
+- **Task:** `nd-status` robustness, hand-off
+- **Raised:** E19 adds a fourth kind. Two consumers I do not own were written
+  against three and neither has a default branch.
+
+  `packages/nd-save.nix:154` builds its work list with
+  `grep -E '^(drifted|new)'`, so an `unreadable` line is not a candidate and not
+  a `missing` either. `nd-save` therefore says "nothing to save" for a file it
+  cannot classify — quieter than the old behaviour of blaming the user's repo,
+  and still silent about a file the next switch will overwrite. `nd-save`'s own
+  blocker check has the same `cmp -s` conflation at `:264` for the repo-side
+  comparison.
+
+  `modules/nd-notice.zsh:22-27` counts `drifted`, `missing` and `new` in a
+  `case` with no default, so an `unreadable` line increments nothing and the
+  notice stays silent even though `nd-status` found something.
+- **Options:** (a) fix them here, out of ownership; (b) raise it and leave both
+  as they are.
+- **Status:** unresolved — **for the owners of `packages/nd-save.nix` and
+  `modules/nd-notice.zsh`**
+- **Resolution:** (b). `packages/nd-save.nix` and `modules/` are outside this
+  change's ownership and editing them would put two agents in the same files.
+  What is needed:
+
+  - `nd-save` should report `unreadable` the way it reports `missing` — name the
+    files, say it cannot tell whether they drifted, and skip them — rather than
+    letting them fall off the end into "nothing to save".
+  - `nd-save`'s repo-side `cmp -s "$src" "$flake/$repo_rel"` should distinguish
+    exit 1 from exit ≥2 as `nd-status` now does. Today an unreadable `$src`
+    reads as "the repo differs", which is E14's fail-closed blocker firing for
+    the wrong reason and naming the wrong file.
+  - `nd_notice` should either count unrecognised kinds under a catch-all or say
+    that `nd-status` reported something it does not understand. A silent `case`
+    default is how a new kind disappears.
+
+  Until then, `nd-switch` is the only consumer that says anything about an
+  unreadable source, which is why its warning tells the user to copy the file
+  aside by hand rather than pointing at `nd-save`.
+
+## E21 — E11's `tests/glob.nix` case is still outstanding
+- **Task:** E11 close-out, hand-off
+- **Raised:** E11's resolution asked that, once `nd-status` passed `--` to grep,
+  `{ g = "-foo/**"; s = "-foo/x"; want = true; }` be added to `matches` in
+  `tests/glob.nix`. The `--` has landed and `tests/run.sh` now covers the
+  shell side end to end, but `tests/glob*.{nix,sh}` are outside this change's
+  ownership.
+- **Options:** (a) add it anyway; (b) raise it for the owner.
+- **Status:** unresolved — **for the owner of `tests/glob.nix`**
+- **Resolution:** (b). The case is already correct against `builtins.match` —
+  E9's table shows `-` is not escaped and does not need to be — so it should
+  pass on the first run; it exists to stop the escape table growing a `-` later,
+  which would break the ERE for both engines. Nothing else in the glob checks
+  needs to change: `tests/glob-engines.sh` already passes `--`, which is now
+  what `nd-status` does.
