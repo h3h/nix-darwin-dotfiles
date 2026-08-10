@@ -39,13 +39,18 @@ Copy, don't symlink. Then make the drift visible and easy to capture.
    record, so files the application creates later can be recognised.
 2. **Detection.** `nd-status` reads the manifest and classifies every managed
    path as `drifted` (differs from the store source it was placed from),
-   `missing` (deleted) or `new` (a file under a glob root that matches a
-   pattern and has no record yet). Drift is a content comparison against *what
-   was actually installed*, which is what makes the next point work.
+   `missing` (deleted), `new` (a file under a glob root that matches a pattern
+   and has no record yet) or `unreadable` (the store source cannot be opened, so
+   drift cannot be decided either way). Drift is a content comparison against
+   *what was actually installed*, which is what makes the next point work.
 3. **Gate.** `nd-switch` refuses to switch while any managed file has drifted,
-   because switching would copy over it. `missing` and `new` are reported but
-   do not block: a missing file will be restored by the switch, and a new file
-   has no store source to be overwritten by.
+   because switching would copy over it. `missing`, `new` and `unreadable` are
+   reported but do not block: a missing file will be restored by the switch, a
+   new file has no store source to be overwritten by, and an unreadable source
+   is repaired by the switch, which rewrites the manifest.
+   `--allow-dirty` and `--rollback` both bypass the gate, and both name every
+   drifted file and say its contents will be discarded before anything is built
+   and before sudo is asked for anything.
 4. **Capture.** `nd-save` copies drifted and new files back into the repo and
    commits them.
 
@@ -135,7 +140,7 @@ you do not control.
 ```console
 $ nd-switch                 # build, then switch this host
 $ nd-switch --build         # build only: no sudo, no switch
-$ nd-switch --allow-dirty   # switch even though managed files drifted
+$ nd-switch --allow-dirty   # switch anyway, discarding drift (named first)
 $ nd-switch --rollback      # back one generation
 $ nd-switch --rollback 3    # back three
 $ nd-save                   # copy drifted and new files back, review, commit
@@ -143,7 +148,7 @@ $ nd-save -m "Update Zed"   # with a commit message
 $ nd-save -y                # skip the confirmation
 $ nd-save --force           # overwrite repo edits that were never placed
 $ nd-save --branch main     # require a branch for this run
-$ nd-status                 # what has drifted, gone missing, or appeared
+$ nd-status                 # what drifted, went missing, appeared or cannot be read
 ```
 
 `nd-status` prints one line per finding, `<kind>` TAB `<path under $HOME>` TAB
@@ -259,8 +264,9 @@ $ nix flake check          # runs the suite in a sandbox
 $ bash tests/run.sh        # or directly
 ```
 
-133 cases covering argument parsing; drift, missing and new classification; the
-gate and its override; flag ordering; copy-back; commit scoping and contents;
+193 cases covering argument parsing; drift, missing, new and unreadable
+classification; the gate, its two overrides and what they say they will discard;
+flag ordering; copy-back; commit scoping and contents;
 the branch guard and detached HEAD; the unplaced-repo-edit refusal and
 `--force`; derived commit subjects; credential refusal and the benign shapes
 that must not trip it; the zsh notice; and the end-to-end capture loop for an
@@ -280,10 +286,13 @@ touches a real home directory.
   expressions and brace expansion match literally.
 - Only regular files are enumerated under a glob root; symlinks, directories and
   anything else `find -type f` rejects are skipped.
-- A path containing a newline under a glob root is skipped, with a warning. The
-  output format is one record per line and cannot represent it.
+- A path containing a newline or a tab under a glob root is skipped, with a
+  warning. The output format is one tab-separated record per line and cannot
+  represent either.
 - `nd-switch --rollback` reverts the generation, and placed files come back with
-  it — but any drift you had not saved is gone, exactly as with the gate.
+  it — but any drift you had not saved is gone. It names what it is about to
+  discard first; unlike an ordinary switch, it warns rather than refusing,
+  because a rollback is usually the repair.
 - macOS and nix-darwin only. The package builds anywhere; `nd-switch` calls
   `darwin-rebuild`.
 
