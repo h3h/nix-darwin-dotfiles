@@ -34,9 +34,7 @@ writeShellApplication {
         | sed 's|.*/system-\([0-9]*\)-link|\1|' | sort -n
     }
 
-    # Parsed as a loop so flags work in any order. Positional checks let
-    # `--allow-dirty --build` perform a switch, because --build was never
-    # consumed and fell through to darwin-rebuild.
+    # Parsed as a loop so flags work in any order.
     while [ $# -gt 0 ]; do
       case "$1" in
         --rollback | -r)
@@ -172,6 +170,17 @@ writeShellApplication {
           echo "nd-switch: run 'nd-save' to copy them back and commit, or --allow-dirty to discard" >&2
           return 1
         fi
+
+        # --build places nothing, so the OVERWRITTEN wording the other labels
+        # use is simply false here, and a false warning is how a true one stops
+        # being read.
+        if [ "$label" = "--build" ]; then
+          echo "nd-switch: --build: these files changed since they were placed:" >&2
+          printf '%s\n' "$drifted" | sed 's/^/  /' >&2
+          echo "nd-switch: nothing is being placed, so they are left alone." >&2
+          return 0
+        fi
+
         echo "nd-switch: $label: these files changed since they were placed and will be OVERWRITTEN:" >&2
         printf '%s\n' "$drifted" | sed 's/^/  /' >&2
         echo "nd-switch: their contents will be discarded. Run 'nd-save' first to keep them." >&2
@@ -212,7 +221,17 @@ writeShellApplication {
     fi
 
     if [ -n "$allow_dirty" ]; then
+      # Checked before --build: --allow-dirty already reaches the build step
+      # without blocking, so a caller who passed both gets the discard warning
+      # they asked for with --allow-dirty rather than the --build wording, and
+      # every existing --allow-dirty case keeps the exact text it always had
+      # whether or not --build rides along with it.
       report_status "--allow-dirty"
+    elif [ -n "$build_only" ]; then
+      # Reports everything and refuses nothing. --build cannot discard drift
+      # because it places nothing, and the gate blocking it took away the only
+      # non-destructive way to inspect the state while stuck behind the gate.
+      report_status "--build" || true
     else
       if ! report_status ""; then
         exit 1

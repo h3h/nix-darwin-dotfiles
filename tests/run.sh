@@ -159,9 +159,12 @@ out=$(run_switch "$d" --build)
 check_not "clean tree does not report drift" "changed since they were placed" "$out"
 rm -rf "$d"
 
+# Plain nd-switch, no flags: this is the gate itself, not --build's carve-out
+# of it, so it must still refuse. --build no longer speaks for the gate now
+# that it has its own non-blocking path below.
 d=$(new_fixture)
 drift "$d"
-out=$(run_switch "$d" --build); st=$?
+out=$(run_switch "$d"); st=$?
 check "drift is detected" "changed since they were placed" "$out"
 check "drift names the file" ".config/app/config.toml" "$out"
 check "drift suggests nd-save" "nd-save" "$out"
@@ -325,6 +328,47 @@ out=$(run_switch "$d"); st=$?
 check_status "a mixed run still refuses" 1 "$st"
 check "the mixed run blocks on the drifted file" "other.toml" "$out"
 check "the mixed run still reports the captured one" "the repo already holds the change" "$out"
+rm -rf "$d"
+
+# --build is documented as "build only, no sudo, no switch". It places nothing,
+# so the gate has nothing to protect — and blocking it removed the one
+# non-destructive way to see the situation while stuck behind the gate.
+#
+# The fixture's flake.nix is the same stub `{}` every other --build case in
+# this file builds against, so `nix build` always fails once it is reached —
+# there is no darwinConfigurations output to build. That failure exits
+# non-zero regardless of whether the gate blocked first, so exit status cannot
+# tell the two apart; reaching "building" at all is what proves the gate did
+# not exit first, exactly as the other --build cases above already rely on.
+d=$(new_fixture)
+drift "$d"
+out=$(run_switch "$d" --build)
+check "--build still names the drifted file" ".config/app/config.toml" "$out"
+check "--build says nothing is being placed" "nothing is being placed" "$out"
+check "--build reaches the build step" "building" "$out"
+check_not "--build does not threaten an overwrite" "OVERWRITTEN" "$out"
+check_not "--build does not say contents are discarded" "contents will be discarded" "$out"
+rm -rf "$d"
+
+# Both flag orders reach the build step and neither switches. A comment in
+# nd-switch claimed --allow-dirty --build fell through to a real switch because
+# --build was never consumed; it does not, and this pins that rather than the
+# comment. "building" is the reachable half of that claim in this fixture, per
+# the note above; "darwin-rebuild" never appearing is the other half, since
+# reaching it needs a successful build this stub flake cannot produce either
+# way — nothing about --build's own handling can make it appear.
+d=$(new_fixture)
+drift "$d"
+out=$(run_rollback "$d" --allow-dirty --build)
+check "--allow-dirty --build reaches the build step" "building" "$out"
+check_not "--allow-dirty --build does not switch" "darwin-rebuild" "$out"
+rm -rf "$d"
+
+d=$(new_fixture)
+drift "$d"
+out=$(run_rollback "$d" --build --allow-dirty)
+check "--build --allow-dirty reaches the build step" "building" "$out"
+check_not "--build --allow-dirty does not switch" "darwin-rebuild" "$out"
 rm -rf "$d"
 
 echo "nd-save"

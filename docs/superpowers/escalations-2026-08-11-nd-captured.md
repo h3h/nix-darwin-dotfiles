@@ -58,3 +58,125 @@ No fixture was touched and no expectation was loosened. This entry exists
 because the brief predicted breakage that a full run did not reproduce, and
 recording why closes the loop rather than leaving a silent gap between what
 Step 7 asked for and what the diff shows.
+
+## C2 — `--allow-dirty --build` keeps the `--allow-dirty` label, not `--build`
+
+**Status:** resolved
+
+Task 3's brief (Step 4) checks `build_only` before `allow_dirty`, so that
+`--allow-dirty --build` would take the new `--build` label ("nothing is being
+placed, so they are left alone") instead of the `--allow-dirty` label
+("OVERWRITTEN" / "their contents will be discarded"). The task's own
+instructions flagged this as something to watch, on the assumption that the
+pre-existing `--allow-dirty` cases "do not pass `--build`."
+
+Reading `tests/run.sh` before writing any code showed that assumption is
+false: three pre-existing cases — "--allow-dirty names what it will discard"
+and its neighbors around line 179, "the discard warning precedes the build"
+around line 192, and "--allow-dirty still reports missing" around line 247 —
+already call `run_switch "$d" --build --allow-dirty`, and assert the
+`--allow-dirty` wording (`OVERWRITTEN`, `contents will be discarded`, `Run
+'nd-save' first to keep them`) verbatim. Implementing Step 4 exactly as
+written was verified empirically (build + `tests/run.sh`) to turn all three
+red, because the label those cases depend on stopped being chosen.
+
+The global constraint for this task is explicit and stronger than the
+brief's stated rationale: "The existing `--allow-dirty` and `--rollback`
+cases must keep their current wording and behaviour exactly." That rules out
+the brief's ordering as written. The fix was to swap the two branches —
+`allow_dirty` is checked first, so `--allow-dirty` alone or combined with
+`--build` keeps producing the exact wording it always has, and `build_only`
+only gets its own `--build` label when `--allow-dirty` was not also given.
+This still satisfies the task's actual interface requirement ("`--build`
+reaches the build step whatever `nd-status` found"): both branches call
+`report_status` in a way that never returns 1, so `--build` is unblocked
+whether or not `--allow-dirty` rides along with it — only the wording used
+when both are present differs from the brief's draft, in favor of the
+wording the existing suite already pins.
+
+The brief's own comment ("Checked before --allow-dirty so that the two
+together still describe what is actually about to happen, which is a build")
+was not reproduced, since it would misdescribe the code actually shipped;
+Task 3 exists in part to remove a comment that no longer matches the code; it
+would defeat the point to add a fresh one that doesn't from the start. The
+new comment above the swapped branches explains the actual chosen order
+instead.
+
+## C3 — three new `--build` regression assertions cannot rely on real `nix build` succeeding
+
+**Status:** resolved
+
+Task 3's brief (Step 1) appends three test blocks. Two of them —
+`--allow-dirty --build` and `--build --allow-dirty`, run through
+`run_rollback` — assert `check_status ... 0 "$st"` and
+`check "..." "build only, not switching" "$out"`, both of which are reachable
+in the current code only after `nix build --no-link
+"$flake#darwinConfigurations.$host.system"` returns successfully. A third
+assertion, on the plain `--build` case, similarly asserts `check_status
+"--build is not blocked by drift" 0 "$st"`.
+
+`new_fixture` (the fixture every one of these cases uses) writes
+`flake.nix` as the literal text `{}`, which Nix rejects as flake output with
+`error: flake '...' lacks attribute 'outputs'` — confirmed directly with `nix
+build --no-link` against a fixture built by hand, independent of this
+sandbox or network access; it is a property of the fixture, not the
+environment. Every existing `--build` assertion elsewhere in `tests/run.sh`
+already works around this by asserting only that the literal string
+`"building"` (the echo that runs immediately before the `nix build` call)
+appears, and never checking exit status or anything printed after it — see
+the comment on "a missing file does not block" a few lines above, which
+states the same reasoning for a different case: "Reaching the build step is
+the thing that actually discriminates: a block exits before it." Exit status
+in particular is not just unreachable but actively misleading here: a real
+`nix build` failure and a gate refusal both exit 1, so `check_status`
+comparing to `0` cannot distinguish "the gate blocked" from "the gate did not
+block, but the stub flake failed to build" — a fix to the drift gate can
+never turn that assertion green.
+
+The three assertions were changed to match the file's established pattern:
+`check_status` was dropped from all three, `"build only, not switching"` was
+replaced with `"building"`, and `check_not "... darwin-rebuild"` was kept
+(that string only appears past the same unreachable point, so its absence is
+still a real, if currently vacuous in this fixture, regression pin — the
+same shape as the existing "an unreadable source is not reported as drift"
+style assertions in this file). The message-content assertions the brief
+specified — `.config/app/config.toml` named, "nothing is being placed"
+present, no `OVERWRITTEN`, no `contents will be discarded` — were kept
+verbatim, since those are the assertions that actually exercise the label
+change Step 3 makes.
+
+## C4 — the pre-existing gate test moved off `--build`
+
+**Status:** resolved
+
+Before Step 3/4 were applied, the very first drift case in `tests/run.sh`
+("The gate. This is the behaviour the whole design rests on.") called
+`run_switch "$d" --build` on a drifted fixture and asserted the plain-gate
+refusal: `"changed since they were placed"`, `"nd-save"`, and
+`check_status ... 1`. That is the exact input Task 3 changes the meaning of:
+after Step 3/4, `--build` on a drifted fixture no longer refuses by design,
+so this case necessarily flipped from pass to fail once the fix landed —
+confirmed empirically, it was the sole remaining failure after fixing C2 and
+C3.
+
+The task's floor is "234 passed, 0 failed, no existing assertion may
+regress," which on its face this appears to violate. But the assertions in
+this block are not testing `--build`; the block's own comment says they are
+testing "the gate," and `--build` was only the flag the case happened to
+invoke it through. Leaving the case unchanged would mean the suite could
+never reach 0 failures with the drift gate correctly fixed — the two
+requirements are mutually exclusive for this one case, and the task's stated
+purpose ("`--build` is refused by the drift gate although it places
+nothing") is unambiguous about which one is the actual defect. The case was
+changed to invoke `run_switch "$d"` with no flags, which still calls into the
+same default (empty-label) branch of `report_status` and still refuses drift
+exactly as before — the assertions and their wording were not touched, only
+the flag that reaches them. This is arguably a small improvement in
+precision as a side effect: the exit-1 check no longer coincides with a real
+`nix build` failure (see C3) and is now driven purely by the gate's own
+`return 1` / `exit 1`, reached before `nix build` is ever invoked.
+
+The sibling case just above it (clean fixture, `run_switch "$d" --build`,
+asserting only the absence of drift text) was left untouched: it carries no
+drift, so neither label branch is ever reached, and it is unaffected by
+either defect.
