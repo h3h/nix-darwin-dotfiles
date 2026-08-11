@@ -139,7 +139,7 @@ trap 'rm -rf "$stub_bin"' EXIT
 run_switch() { HOME="$1/home" ND_FLAKE="$1/repo" "$ND_SWITCH" "${@:2}" 2>&1; }
 run_rollback() { HOME="$1/home" ND_FLAKE="$1/repo" PATH="$stub_bin:$PATH" "$ND_SWITCH" "${@:2}" 2>&1; }
 run_save() { HOME="$1/home" ND_FLAKE="$1/repo" "$ND_SAVE" "${@:2}" 2>&1; }
-run_status() { HOME="$1/home" "$ND_STATUS" "${@:2}" 2>&1; }
+run_status() { HOME="$1/home" ND_FLAKE="$1/repo" "$ND_STATUS" "${@:2}" 2>&1; }
 
 echo "nd-switch"
 
@@ -1021,6 +1021,102 @@ rm -rf "$d/home/.config/nv"
 out=$(run_status "$d"); st=$?
 check_status "an absent glob root exits 0" 0 "$st"
 check "an absent glob root reports its files missing" "missing	.config/nv/init.lua" "$out"
+rm -rf "$d"
+
+# The third state. The live file differs from the store source that placed it,
+# but the repo already holds that exact content, so the next switch rebuilds the
+# file FROM that copy and discards nothing. Classifying it as drifted is what
+# deadlocked nd-switch against nd-save: nd-switch refused to place it and
+# nd-save refused to re-capture it, each naming the other.
+d=$(new_fixture)
+drift "$d"
+install -m 0644 "$d/home/.config/app/config.toml" "$d/repo/files/config.toml"
+git -C "$d/repo" add -A
+git -C "$d/repo" commit -qm captured
+out=$(run_status "$d")
+check "a captured file is captured" "captured	.config/app/config.toml	files/config.toml" "$out"
+check_not "and is not drifted" "drifted" "$out"
+rm -rf "$d"
+
+# Uncommitted is still captured: nix builds a dirty tree from the working tree,
+# so the content is what gets placed. This is the state nd-save leaves behind
+# when its commit prompt is declined, and it is a legitimate way to get here.
+d=$(new_fixture)
+drift "$d"
+install -m 0644 "$d/home/.config/app/config.toml" "$d/repo/files/config.toml"
+out=$(run_status "$d")
+check "an uncommitted but tracked capture is captured" "captured	.config/app/config.toml" "$out"
+rm -rf "$d"
+
+# Untracked is NOT captured. Nix cannot see an untracked file at all — it fails
+# evaluation with "To make it visible to Nix, run: git add" — so a repo copy
+# that matches byte for byte but is untracked would not survive the switch.
+# Calling it captured would cost the user the file.
+d=$(new_fixture)
+drift "$d"
+git -C "$d/repo" rm -q --cached files/config.toml
+install -m 0644 "$d/home/.config/app/config.toml" "$d/repo/files/config.toml"
+out=$(run_status "$d")
+check "an untracked repo copy is still drifted" "drifted	.config/app/config.toml" "$out"
+check_not "and is not captured" "captured" "$out"
+rm -rf "$d"
+
+d=$(new_fixture)
+drift "$d"
+out=$(run_status "$d")
+check "a repo copy that differs is still drifted" "drifted	.config/app/config.toml" "$out"
+rm -rf "$d"
+
+d=$(new_fixture)
+drift "$d"
+rm "$d/repo/files/config.toml"
+out=$(run_status "$d")
+check "an absent repo copy is still drifted" "drifted	.config/app/config.toml" "$out"
+rm -rf "$d"
+
+# Fails closed on a flake path that is not a repository at all: git cannot
+# answer, so the question is undecided, and undecided is never captured.
+d=$(new_fixture)
+drift "$d"
+install -m 0644 "$d/home/.config/app/config.toml" "$d/repo/files/config.toml"
+out=$(HOME="$d/home" ND_FLAKE="$d/nowhere" "$ND_STATUS" 2>&1)
+check "an absent flake is still drifted" "drifted	.config/app/config.toml" "$out"
+rm -rf "$d"
+
+# A directory where the repo copy should be. cmp exits 2 rather than 1, which
+# is "I could not read one of them", not "they match".
+d=$(new_fixture)
+drift "$d"
+rm "$d/repo/files/config.toml"
+mkdir "$d/repo/files/config.toml"
+out=$(run_status "$d")
+check "a directory in the repo's place is still drifted" "drifted	.config/app/config.toml" "$out"
+rm -rf "$d"
+
+# The glob side. A file the application invented has no store source, so "did it
+# drift" is meaningless — but "is this exact content already in the repo, where
+# the next switch places it from" is the same question with the same answer.
+d=$(new_glob_fixture)
+printf '{"pinned":"abc"}\n' > "$d/home/.config/nv/lazy-lock.json"
+install -m 0644 "$d/home/.config/nv/lazy-lock.json" "$d/repo/files/nv/lazy-lock.json"
+git -C "$d/repo" add -A
+git -C "$d/repo" commit -qm captured
+out=$(run_status "$d")
+check "a captured glob file is captured" "captured	.config/nv/lazy-lock.json	files/nv/lazy-lock.json" "$out"
+check_not "and is not new" "new	.config/nv/lazy-lock.json" "$out"
+rm -rf "$d"
+
+d=$(new_glob_fixture)
+printf '{"pinned":"abc"}\n' > "$d/home/.config/nv/lazy-lock.json"
+out=$(run_status "$d")
+check "an uncaptured glob file is still new" "new	.config/nv/lazy-lock.json" "$out"
+rm -rf "$d"
+
+d=$(new_glob_fixture)
+printf '{"pinned":"abc"}\n' > "$d/home/.config/nv/lazy-lock.json"
+install -m 0644 "$d/home/.config/nv/lazy-lock.json" "$d/repo/files/nv/lazy-lock.json"
+out=$(run_status "$d")
+check "an untracked glob capture is still new" "new	.config/nv/lazy-lock.json" "$out"
 rm -rf "$d"
 
 echo
