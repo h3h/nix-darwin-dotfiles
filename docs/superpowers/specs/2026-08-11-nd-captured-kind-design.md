@@ -325,6 +325,17 @@ End to end, the loop the issue is about, in one case:
 
 ## What this does not change
 
+**`nd-status` output stays machine-readable.** Considered during this design and
+deferred, so that it is not re-proposed as if new. The format is `<kind>` TAB
+`<dest>` TAB `<repo path>`, and a clean system prints nothing — which reads as a
+broken command until you know it. A prose mode grouping findings by kind with a
+line of advice each, with the current format moved behind `--porcelain` for the
+three callers, is the obvious improvement, and `captured` makes the case
+slightly stronger by adding a sixth word to learn. It is deferred because the
+decision is better made after using the command than from a mockup, and because
+it widens a three-program change to four. Nothing here forecloses it: the kinds
+are the contract, not the layout.
+
 `--allow-dirty` keeps its meaning and its wording. Splitting the third row out
 removes the case where it was the only way forward, which is most of what made
 it ambiguous; whether it should further distinguish its two remaining risks is
