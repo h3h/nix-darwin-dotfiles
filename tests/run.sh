@@ -278,6 +278,55 @@ check "missing flake.nix is reported" "no flake.nix" "$out"
 check_status "missing flake.nix exits 1" 1 "$st"
 rm -rf "$d"
 
+# Captured content does not block. The new generation builds this file from the
+# repo copy, which is byte-identical to what is live, so the overwrite has
+# nothing to discard. Refusing here is the deadlock the issue is about.
+d=$(new_fixture)
+drift "$d"
+install -m 0644 "$d/home/.config/app/config.toml" "$d/repo/files/config.toml"
+git -C "$d/repo" add -A
+git -C "$d/repo" commit -qm captured
+out=$(run_switch "$d" --build)
+check "captured content is named" "the repo already holds the change" "$out"
+check "captured content names the file" ".config/app/config.toml" "$out"
+check "captured content says nothing is lost" "nothing is lost" "$out"
+check "captured content does not block" "building" "$out"
+check_not "and is not called drift" "switching would overwrite them" "$out"
+rm -rf "$d"
+
+# The guard still fires on genuine, uncaptured drift. This is the property the
+# fix must not cost, and it is worth more than any of the assertions above.
+d=$(new_fixture)
+drift "$d"
+out=$(run_switch "$d"); st=$?
+check_status "uncaptured drift still refuses" 1 "$st"
+check "uncaptured drift still names the file" "changed since they were placed" "$out"
+check "uncaptured drift still points at nd-save" "run 'nd-save'" "$out"
+rm -rf "$d"
+
+# A mixed run blocks on the drifted file and reports the captured one. The gate
+# is per-file, so one captured file must not clear the way for another that is
+# genuinely at risk.
+d=$(new_fixture)
+printf 'other = 1\n' > "$d/other-source"
+chmod 0444 "$d/other-source"
+install -m 0644 "$d/other-source" "$d/home/.config/app/other.toml"
+install -m 0644 "$d/other-source" "$d/repo/files/other.toml"
+printf '%s\t%s\t%s\n' "$d/other-source" ".config/app/other.toml" "files/other.toml" \
+  >> "$d/home/.local/state/nd/manifest"
+git -C "$d/repo" add -A
+git -C "$d/repo" commit -qm second
+drift "$d"
+install -m 0644 "$d/home/.config/app/config.toml" "$d/repo/files/config.toml"
+git -C "$d/repo" add -A
+git -C "$d/repo" commit -qm captured
+printf 'other = 2\n' > "$d/home/.config/app/other.toml"
+out=$(run_switch "$d"); st=$?
+check_status "a mixed run still refuses" 1 "$st"
+check "the mixed run blocks on the drifted file" "other.toml" "$out"
+check "the mixed run still reports the captured one" "the repo already holds the change" "$out"
+rm -rf "$d"
+
 echo "nd-save"
 
 d=$(new_fixture)

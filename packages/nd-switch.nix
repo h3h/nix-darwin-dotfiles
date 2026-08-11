@@ -108,7 +108,7 @@ writeShellApplication {
     # Returns 1 only when the gate refuses.
     report_status() {
       local label="$1"
-      local status drifted missing created unreadable unknown
+      local status drifted missing created unreadable unknown captured
 
       if [ ! -f "$manifest" ]; then
         return 0
@@ -120,12 +120,13 @@ writeShellApplication {
       missing="$(printf '%s\n' "$status" | grep "^missing$tab" | cut -f2 || true)"
       created="$(printf '%s\n' "$status" | grep "^new$tab" | cut -f2 || true)"
       unreadable="$(printf '%s\n' "$status" | grep "^unreadable$tab" | cut -f2 || true)"
+      captured="$(printf '%s\n' "$status" | grep "^captured$tab" | cut -f2 || true)"
       # Anything else is a kind this nd-switch predates. Saying so beats
       # dropping it, which is how a newer nd-status paired with an older
       # nd-switch would quietly lose a whole category — the same silence
       # defect 10 is about, one version skew away.
       unknown="$(printf '%s\n' "$status" | grep -v '^$' \
-        | grep -vE "^(drifted|missing|new|unreadable)$tab" || true)"
+        | grep -vE "^(drifted|missing|new|unreadable|captured)$tab" || true)"
 
       if [ -n "$missing" ]; then
         echo "nd-switch: these managed files are gone and will be restored:" >&2
@@ -150,6 +151,17 @@ writeShellApplication {
         echo "nd-switch: nd-status reported kinds this nd-switch does not know:" >&2
         printf '%s\n' "$unknown" | sed 's/^/  /' >&2
         echo "nd-switch: they are outside the drift gate; nd-switch and nd-status may be out of step." >&2
+      fi
+
+      # Not a finding the gate acts on, and deliberately reported anyway. The
+      # live file differs from what this generation placed, so something did
+      # rewrite it — but the repo already holds that content, so the switch
+      # rebuilds the file from it and discards nothing. Saying so is what tells
+      # the user why a file they know changed is not being refused.
+      if [ -n "$captured" ]; then
+        echo "nd-switch: these changed since they were placed, and the repo already holds the change:" >&2
+        printf '%s\n' "$captured" | sed 's/^/  /' >&2
+        echo "nd-switch: switching re-places them from the repo; nothing is lost." >&2
       fi
 
       if [ -n "$drifted" ]; then
