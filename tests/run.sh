@@ -1266,7 +1266,7 @@ echo
 echo "zsh notice"
 
 run_notice() {
-  HOME="$1/home" PATH="$(dirname "$ND_STATUS"):$PATH" \
+  HOME="$1/home" ND_FLAKE="$1/repo" PATH="$(dirname "$ND_STATUS"):$PATH" \
     zsh -f -c "source '$ND_NOTICE'; nd_notice" 2>&1
 }
 
@@ -1334,6 +1334,38 @@ out=$(HOME="$d/home" PATH="$stub_status:$PATH" \
 check "a kind that only starts like a known one is not counted as it" "1 unrecognised" "$out"
 check_not "and it is not counted as new" "1 new" "$out"
 rm -rf "$d" "$stub_status"
+
+d=$(new_fixture)
+drift "$d"
+install -m 0644 "$d/home/.config/app/config.toml" "$d/repo/files/config.toml"
+git -C "$d/repo" add -A
+git -C "$d/repo" commit -qm captured
+out=$(run_notice "$d")
+check "a captured file is announced" "1 captured" "$out"
+check_not "and not as unrecognised" "unrecognised" "$out"
+check "a captured-only state advises nd-switch" "nd-switch" "$out"
+check_not "and does not advise nd-save" "nd-save" "$out"
+rm -rf "$d"
+
+# Captured and drifted together. nd-save still has work to do, so the advice
+# must not be diverted by the captured file.
+d=$(new_fixture)
+printf 'other = 1\n' > "$d/other-source"
+chmod 0444 "$d/other-source"
+install -m 0644 "$d/other-source" "$d/home/.config/app/other.toml"
+install -m 0644 "$d/other-source" "$d/repo/files/other.toml"
+printf '%s\t%s\t%s\n' "$d/other-source" ".config/app/other.toml" "files/other.toml" \
+  >> "$d/home/.local/state/nd/manifest"
+drift "$d"
+install -m 0644 "$d/home/.config/app/config.toml" "$d/repo/files/config.toml"
+git -C "$d/repo" add -A
+git -C "$d/repo" commit -qm captured
+printf 'other = 2\n' > "$d/home/.config/app/other.toml"
+out=$(run_notice "$d")
+check "both are counted" "1 drifted" "$out"
+check "captured is counted too" "1 captured" "$out"
+check "the advice stays nd-save while drift remains" "nd-save" "$out"
+rm -rf "$d"
 
 echo
 echo "end to end"
