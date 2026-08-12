@@ -1,7 +1,7 @@
 # Design: the `captured` kind, and two smaller `nd-switch` defects
 
 Date: 2026-08-11
-Status: approved; not yet implemented
+Status: approved; implemented
 Target release: v0.2.1
 
 Fixes [issue #1](https://github.com/h3h/nix-darwin-dotfiles/issues/1). The issue
