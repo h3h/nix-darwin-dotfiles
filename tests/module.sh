@@ -313,5 +313,41 @@ check "a deleted declared file is missing" \
   "missing${tab}.config/app/config.toml${tab}files/app/config.toml" "$out"
 
 echo
+echo "captured (round trip)"
+
+# The captured side of the round trip: a manifest the module actually wrote,
+# read by the real nd-status, against a real git repository standing in for
+# the flake. This is the only place the module's own manifestText and
+# kind_for's git-tracked check meet — tests/run.sh pins kind_for against
+# manifests it writes by hand, never against one the module produced.
+#
+# ND_FLAKE is set explicitly for this one case, unlike everywhere else in this
+# file: line 31 unsets it (and ND_MANIFEST, ND_EXPECTED_BRANCH) so the wrapper
+# cases can tell an inherited value from --set-default's, and every other case
+# here relies on that unset staying in place. kind_for needs an actual
+# repository at the path nd-status is told to read, and the module's own
+# flakePath default ($ND_FLAKE_PATH, /opt/flakes/dotfiles) does not exist in
+# this sandbox — so this case points ND_FLAKE at one of its own instead of
+# touching the unset.
+h="$tmp/rt-captured"
+mkdir -p "$h"
+activate "$ND_ACTIVATION" "$h" > /dev/null
+
+flake="$tmp/rt-captured-flake"
+mkdir -p "$flake/files/nv"
+git -C "$flake" init -q -b main
+git -C "$flake" config user.email t@example.com
+git -C "$flake" config user.name Test
+
+printf 'return 99\n' > "$h/.config/nv/init.lua"
+install -m 0644 "$h/.config/nv/init.lua" "$flake/files/nv/init.lua"
+git -C "$flake" add -A
+git -C "$flake" commit -qm captured
+
+out=$(HOME="$h" ND_FLAKE="$flake" "$ND_STATUS_BIN" 2>&1)
+check_eq "a file the module placed, then rewritten to match a tracked repo copy, is captured" \
+  "captured${tab}.config/nv/init.lua${tab}files/nv/init.lua" "$out"
+
+echo
 echo "passed $pass, failed $fail"
 [ "$fail" -eq 0 ]

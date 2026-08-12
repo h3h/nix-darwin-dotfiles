@@ -16,8 +16,11 @@
 # was read, findings or not: classifying is this program's job, and deciding
 # what a finding means belongs to its callers.
 #
-# The kinds are drifted, missing, new and unreadable. A caller that meets a kind
-# it does not recognise should say so rather than drop the line.
+# The kinds are captured, drifted, missing, new and unreadable. A caller that
+# meets a kind it does not recognise should say so rather than drop the line.
+#
+# git is not in runtimeInputs on purpose: it is taken from the caller's PATH so
+# the closure does not carry a second git, and the flake check supplies one.
 writeShellApplication {
   name = "nd-status";
   runtimeInputs = [
@@ -27,11 +30,12 @@ writeShellApplication {
   ];
   text = ''
     manifest="''${ND_MANIFEST:-$HOME/.local/state/nd/manifest}"
+    flake="''${ND_FLAKE:-$HOME/.config/nix-darwin}"
 
     case "''${1:-}" in
       -h | --help)
         echo "usage: nd-status"
-        echo "  Classifies managed paths as drifted, missing, new or unreadable."
+        echo "  Classifies managed paths as captured, drifted, missing, new or unreadable."
         echo "  Prints: <kind> TAB <path under \$HOME> TAB <path under the repo root>"
         echo
         echo "  drifted     the live file differs from the store source that placed it"
@@ -40,6 +44,10 @@ writeShellApplication {
         echo "  unreadable  the store source cannot be opened, so whether the live"
         echo "              file drifted cannot be decided either way — usually a"
         echo "              manifest that no longer matches the current generation"
+        echo "  captured    the live file differs from the store source that placed it,"
+        echo "              or nothing placed it — but the repo already holds that exact"
+        echo "              content and git can see it, so the next switch re-places it"
+        echo "              and discards nothing"
         exit 0
         ;;
       "") ;;
@@ -74,6 +82,56 @@ writeShellApplication {
         s="''${s%/}"
       done
       printf '%s' "$s"
+    }
+
+    # Answer, for a path whose content is not what the store placed — or that
+    # nothing placed at all — whether that exact content is already in the repo
+    # where the next switch would build it from. If it is, switching re-places
+    # it byte for byte and discards nothing, so reporting it as something a
+    # switch would destroy is false, and refusing the switch on it deadlocks:
+    # only an activation rewrites the manifest, and the refusal is what declines
+    # to activate.
+    #
+    # Two questions, both of which must answer yes:
+    #
+    #   - the repo copy exists and is byte-identical to the live file; and
+    #   - git can see it. An untracked file is invisible to a flake build — nix
+    #     refuses with "To make it visible to Nix, run: git add" — so a
+    #     byte-identical untracked copy would not survive the switch at all, and
+    #     calling it captured would cost the user the file. A tracked file with
+    #     an uncommitted modification is fine: nix builds a dirty tree from the
+    #     working tree, which is where the content is.
+    #
+    # Everything else falls through to the caller's fallback kind. A missing
+    # repo, a cmp that exits 2 rather than 1, a git that is not on PATH: each
+    # leaves the question undecided, and E14's rule is that "I cannot tell
+    # whether this is safe to overwrite" is the reason not to, not a reason to.
+    kind_for() { # kind_for <fallback> <dest> <repo_rel>
+      local fallback="$1" dest="$2" repo_rel="$3" cmp_st=0
+
+      if [ -z "$repo_rel" ] || [ ! -f "$flake/$repo_rel" ]; then
+        printf '%s' "$fallback"
+        return 0
+      fi
+
+      cmp -s "$flake/$repo_rel" "$HOME/$dest" || cmp_st=$?
+      if [ "$cmp_st" -ne 0 ]; then
+        printf '%s' "$fallback"
+        return 0
+      fi
+
+      # --literal-pathspecs, not a bare "--". A pathspec is not a path: without
+      # it, a repo_rel containing [, * or ? is read as a glob and can match a
+      # different tracked file at a different location. An untracked repo copy
+      # named files/c[1].toml was reported captured this way, because
+      # files/c1.toml happened to be tracked and the pathspec matched that
+      # instead of asking whether files/c[1].toml itself was known to git.
+      if ! git --literal-pathspecs -C "$flake" ls-files --error-unmatch -- "$repo_rel" > /dev/null 2>&1; then
+        printf '%s' "$fallback"
+        return 0
+      fi
+
+      printf 'captured'
     }
 
     scan_glob() {
@@ -134,7 +192,9 @@ writeShellApplication {
         if printf '%s\n' "$placed" | grep -qxF -- "$dest_prefix$rel"; then
           continue
         fi
-        printf 'new\t%s\t%s\n' "$dest_prefix$rel" "$repo_prefix$rel"
+        printf '%s\t%s\t%s\n' \
+          "$(kind_for new "$dest_prefix$rel" "$repo_prefix$rel")" \
+          "$dest_prefix$rel" "$repo_prefix$rel"
       done < <(find "$base" -type f -print0)
     }
 
@@ -167,7 +227,7 @@ writeShellApplication {
               cmp -s "$src" "$HOME/$dest" || cmp_st=$?
               case "$cmp_st" in
                 0) ;;
-                1) printf 'drifted\t%s\t%s\n' "$dest" "$repo_rel" ;;
+                1) printf '%s\t%s\t%s\n' "$(kind_for drifted "$dest" "$repo_rel")" "$dest" "$repo_rel" ;;
                 *) printf 'unreadable\t%s\t%s\n' "$dest" "$repo_rel" ;;
               esac
             fi

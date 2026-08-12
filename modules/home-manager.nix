@@ -300,8 +300,10 @@ in
       default = true;
       description = ''
         Print a one-line notice at interactive zsh startup when managed config
-        needs attention: drifted, missing and newly appeared files are each
-        counted. Forks `nd-status` once, whatever the number of managed files.
+        needs attention: drifted, captured, missing, newly appeared and
+        unreadable files are each counted, and any kind `nd-status` reports
+        that this notice predates is counted as unrecognised rather than
+        dropped. Forks `nd-status` once, whatever the number of managed files.
       '';
     };
   };

@@ -34,9 +34,7 @@ writeShellApplication {
         | sed 's|.*/system-\([0-9]*\)-link|\1|' | sort -n
     }
 
-    # Parsed as a loop so flags work in any order. Positional checks let
-    # `--allow-dirty --build` perform a switch, because --build was never
-    # consumed and fell through to darwin-rebuild.
+    # Parsed as a loop so flags work in any order.
     while [ $# -gt 0 ]; do
       case "$1" in
         --rollback | -r)
@@ -67,7 +65,8 @@ writeShellApplication {
           ;;
         -h | --help)
           echo "usage: nd-switch [--build] [--allow-dirty] [--rollback [N]] [-- ARGS...]"
-          echo "  --build         build only, no sudo, no switch"
+          echo "  --build         build only, no sudo, no switch; reports drift instead of"
+          echo "                  refusing it"
           echo "  --allow-dirty   switch anyway, discarding the contents of drifted"
           echo "                  files; they are named before anything is built"
           echo "  --rollback [N]  go back N generations (default 1)"
@@ -108,7 +107,7 @@ writeShellApplication {
     # Returns 1 only when the gate refuses.
     report_status() {
       local label="$1"
-      local status drifted missing created unreadable unknown
+      local status drifted missing created unreadable unknown captured
 
       if [ ! -f "$manifest" ]; then
         return 0
@@ -120,12 +119,13 @@ writeShellApplication {
       missing="$(printf '%s\n' "$status" | grep "^missing$tab" | cut -f2 || true)"
       created="$(printf '%s\n' "$status" | grep "^new$tab" | cut -f2 || true)"
       unreadable="$(printf '%s\n' "$status" | grep "^unreadable$tab" | cut -f2 || true)"
+      captured="$(printf '%s\n' "$status" | grep "^captured$tab" | cut -f2 || true)"
       # Anything else is a kind this nd-switch predates. Saying so beats
       # dropping it, which is how a newer nd-status paired with an older
       # nd-switch would quietly lose a whole category — the same silence
       # defect 10 is about, one version skew away.
       unknown="$(printf '%s\n' "$status" | grep -v '^$' \
-        | grep -vE "^(drifted|missing|new|unreadable)$tab" || true)"
+        | grep -vE "^(drifted|missing|new|unreadable|captured)$tab" || true)"
 
       if [ -n "$missing" ]; then
         echo "nd-switch: these managed files are gone and will be restored:" >&2
@@ -152,6 +152,38 @@ writeShellApplication {
         echo "nd-switch: they are outside the drift gate; nd-switch and nd-status may be out of step." >&2
       fi
 
+      # Not a finding the gate acts on, and deliberately reported anyway. The
+      # live file differs from what this generation placed, so something did
+      # rewrite it — but the repo already holds that content, so the switch
+      # rebuilds the file from it and discards nothing. Saying so is what tells
+      # the user why a file they know changed is not being refused.
+      if [ -n "$captured" ]; then
+        echo "nd-switch: these changed since they were placed, and the repo already holds the change:" >&2
+        printf '%s\n' "$captured" | sed 's/^/  /' >&2
+
+        # The first line and the file list are true for every label; only the
+        # closing sentence has to vary, because this block used to print one
+        # sentence written for a plain switch and hand it to every label
+        # unexamined. A rollback places the PREVIOUS generation's store content,
+        # not the repo working tree — it does not build from the repo at all —
+        # so "switching re-places them from the repo" is false there, and it
+        # will revert a file this block just called safe. --build places
+        # nothing, so the same sentence is false for the opposite reason. Only
+        # an ordinary switch, with or without --allow-dirty riding along, is
+        # actually about to re-place anything from the repo.
+        case "$label" in
+          --build)
+            echo "nd-switch: nothing is being placed, so they are left alone." >&2
+            ;;
+          --rollback)
+            echo "nd-switch: the repo holds this content, but a rollback places the older generation's copy instead — these files will be reverted." >&2
+            ;;
+          *)
+            echo "nd-switch: switching re-places them from the repo; nothing is lost." >&2
+            ;;
+        esac
+      fi
+
       if [ -n "$drifted" ]; then
         if [ -z "$label" ]; then
           echo "nd-switch: these files changed since they were placed:" >&2
@@ -160,6 +192,17 @@ writeShellApplication {
           echo "nd-switch: run 'nd-save' to copy them back and commit, or --allow-dirty to discard" >&2
           return 1
         fi
+
+        # --build places nothing, so the OVERWRITTEN wording the other labels
+        # use is simply false here, and a false warning is how a true one stops
+        # being read.
+        if [ "$label" = "--build" ]; then
+          echo "nd-switch: --build: these files changed since they were placed:" >&2
+          printf '%s\n' "$drifted" | sed 's/^/  /' >&2
+          echo "nd-switch: nothing is being placed, so they are left alone." >&2
+          return 0
+        fi
+
         echo "nd-switch: $label: these files changed since they were placed and will be OVERWRITTEN:" >&2
         printf '%s\n' "$drifted" | sed 's/^/  /' >&2
         echo "nd-switch: their contents will be discarded. Run 'nd-save' first to keep them." >&2
@@ -199,7 +242,18 @@ writeShellApplication {
       exit 0
     fi
 
-    if [ -n "$allow_dirty" ]; then
+    if [ -n "$build_only" ]; then
+      # Checked before --allow-dirty: --build never switches, even when
+      # --allow-dirty rides along, so the OVERWRITTEN/discarded wording would
+      # be false for this invocation — and a false warning teaches the user to
+      # skim the true one. A caller who wants the discard warning gets it on
+      # the run that can actually discard: a switch without --build.
+      #
+      # Reports everything and refuses nothing. --build cannot discard drift
+      # because it places nothing, and the gate blocking it took away the only
+      # non-destructive way to inspect the state while stuck behind the gate.
+      report_status "--build" || true
+    elif [ -n "$allow_dirty" ]; then
       report_status "--allow-dirty"
     else
       if ! report_status ""; then

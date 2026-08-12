@@ -139,7 +139,7 @@ trap 'rm -rf "$stub_bin"' EXIT
 run_switch() { HOME="$1/home" ND_FLAKE="$1/repo" "$ND_SWITCH" "${@:2}" 2>&1; }
 run_rollback() { HOME="$1/home" ND_FLAKE="$1/repo" PATH="$stub_bin:$PATH" "$ND_SWITCH" "${@:2}" 2>&1; }
 run_save() { HOME="$1/home" ND_FLAKE="$1/repo" "$ND_SAVE" "${@:2}" 2>&1; }
-run_status() { HOME="$1/home" "$ND_STATUS" "${@:2}" 2>&1; }
+run_status() { HOME="$1/home" ND_FLAKE="$1/repo" "$ND_STATUS" "${@:2}" 2>&1; }
 
 echo "nd-switch"
 
@@ -159,9 +159,12 @@ out=$(run_switch "$d" --build)
 check_not "clean tree does not report drift" "changed since they were placed" "$out"
 rm -rf "$d"
 
+# Plain nd-switch, no flags: this is the gate itself, not --build's carve-out
+# of it, so it must still refuse. --build no longer speaks for the gate now
+# that it has its own non-blocking path below.
 d=$(new_fixture)
 drift "$d"
-out=$(run_switch "$d" --build); st=$?
+out=$(run_switch "$d"); st=$?
 check "drift is detected" "changed since they were placed" "$out"
 check "drift names the file" ".config/app/config.toml" "$out"
 check "drift suggests nd-save" "nd-save" "$out"
@@ -176,7 +179,7 @@ rm -rf "$d"
 # and say it before `nix build` and before the sudo prompt.
 d=$(new_fixture)
 drift "$d"
-out=$(run_switch "$d" --build --allow-dirty)
+out=$(run_rollback "$d" --allow-dirty)
 check "--allow-dirty names what it will discard" "will be OVERWRITTEN" "$out"
 check "--allow-dirty names the file" ".config/app/config.toml" "$out"
 check "--allow-dirty says the contents go" "contents will be discarded" "$out"
@@ -189,7 +192,7 @@ rm -rf "$d"
 # for anything, or there is nothing left to interrupt.
 d=$(new_fixture)
 drift "$d"
-out=$(run_switch "$d" --build --allow-dirty)
+out=$(run_rollback "$d" --allow-dirty)
 check "the discard warning precedes the build" "OVERWRITTEN" \
   "$(printf '%s\n' "$out" | sed -n '1,/building/p')"
 rm -rf "$d"
@@ -244,7 +247,7 @@ rm -rf "$d"
 # --allow-dirty suppresses the block, not the reports.
 d=$(new_fixture)
 rm "$d/home/.config/app/config.toml"
-out=$(run_switch "$d" --build --allow-dirty)
+out=$(run_switch "$d" --allow-dirty)
 check "--allow-dirty still reports missing" "will be restored" "$out"
 rm -rf "$d"
 
@@ -276,6 +279,161 @@ rm "$d/repo/flake.nix"
 out=$(run_switch "$d" --build); st=$?
 check "missing flake.nix is reported" "no flake.nix" "$out"
 check_status "missing flake.nix exits 1" 1 "$st"
+rm -rf "$d"
+
+# Captured content does not block. The new generation builds this file from the
+# repo copy, which is byte-identical to what is live, so the overwrite has
+# nothing to discard. Refusing here is the deadlock the issue is about.
+#
+# This is a plain switch, not --build: --build's captured wording is its own
+# case below now that it is label-aware, and "nothing is lost" is only true of
+# a run that actually switches. The fixture's flake.nix is the usual bare "{}",
+# so this still fails at the `nix build` step under errexit — the assertions
+# are all on what prints before that, same as every other case that reaches
+# "building" in this file.
+d=$(new_fixture)
+drift "$d"
+install -m 0644 "$d/home/.config/app/config.toml" "$d/repo/files/config.toml"
+git -C "$d/repo" add -A
+git -C "$d/repo" commit -qm captured
+out=$(run_switch "$d")
+check "captured content is named" "the repo already holds the change" "$out"
+check "captured content names the file" ".config/app/config.toml" "$out"
+check "captured content says nothing is lost" "nothing is lost" "$out"
+check "captured content does not block" "building" "$out"
+check_not "and is not called drift" "switching would overwrite them" "$out"
+rm -rf "$d"
+
+# --build's captured wording is its own case: it places nothing, so "nothing is
+# lost" (which claims a re-place happened) is exactly the false-under---build
+# sentence the drifted block already learned not to print, and captured needs
+# the same fix.
+d=$(new_fixture)
+drift "$d"
+install -m 0644 "$d/home/.config/app/config.toml" "$d/repo/files/config.toml"
+git -C "$d/repo" add -A
+git -C "$d/repo" commit -qm captured
+out=$(run_switch "$d" --build)
+check "--build captured content is named" "the repo already holds the change" "$out"
+check "--build captured says nothing is being placed" "nothing is being placed, so they are left alone" "$out"
+check_not "--build captured does not say nothing is lost" "nothing is lost" "$out"
+check "--build captured still reaches the build step" "building" "$out"
+rm -rf "$d"
+
+# --rollback's captured wording is also its own case: a rollback places the
+# PREVIOUS generation's store content, not the repo working tree, so "nothing
+# is lost" is false there too — the file the repo captured is about to be
+# reverted, not re-placed. This is the gap C-numbered escalations warned about:
+# there was no --rollback case anywhere in the suite with a captured file in
+# it. The rollback itself still has to proceed; captured never gates.
+d=$(new_fixture)
+drift "$d"
+install -m 0644 "$d/home/.config/app/config.toml" "$d/repo/files/config.toml"
+git -C "$d/repo" add -A
+git -C "$d/repo" commit -qm captured
+out=$(run_rollback "$d" --rollback)
+check "--rollback captured content is named" "the repo already holds the change" "$out"
+check "--rollback captured says the file will be reverted" \
+  "a rollback places the older generation's copy instead" "$out"
+check_not "--rollback captured does not say nothing is lost" "nothing is lost" "$out"
+check "--rollback still proceeds with a captured file present" \
+  "darwin-rebuild switch --rollback" "$out"
+rm -rf "$d"
+
+# --allow-dirty's captured wording is the plain-switch wording, not its own
+# case: --allow-dirty only changes whether *uncaptured* drift blocks, it does
+# not change what a switch places, so the `*)` arm of the captured report
+# (shared by the empty label and --allow-dirty) applies unchanged. Until now
+# that arm was reached only through the empty label — this is the missing
+# --allow-dirty case.
+d=$(new_fixture)
+drift "$d"
+install -m 0644 "$d/home/.config/app/config.toml" "$d/repo/files/config.toml"
+git -C "$d/repo" add -A
+git -C "$d/repo" commit -qm captured
+out=$(run_switch "$d" --allow-dirty)
+check "--allow-dirty captured content is named" "the repo already holds the change" "$out"
+check "--allow-dirty captured says nothing is lost" "nothing is lost" "$out"
+check_not "--allow-dirty captured is not called an overwrite" "will be OVERWRITTEN" "$out"
+check "--allow-dirty captured still reaches the build step" "building" "$out"
+rm -rf "$d"
+
+# The guard still fires on genuine, uncaptured drift. This is the property the
+# fix must not cost, and it is worth more than any of the assertions above.
+d=$(new_fixture)
+drift "$d"
+out=$(run_switch "$d"); st=$?
+check_status "uncaptured drift still refuses" 1 "$st"
+check "uncaptured drift still names the file" "changed since they were placed" "$out"
+check "uncaptured drift still points at nd-save" "run 'nd-save'" "$out"
+rm -rf "$d"
+
+# A mixed run blocks on the drifted file and reports the captured one. The gate
+# is per-file, so one captured file must not clear the way for another that is
+# genuinely at risk.
+d=$(new_fixture)
+printf 'other = 1\n' > "$d/other-source"
+chmod 0444 "$d/other-source"
+install -m 0644 "$d/other-source" "$d/home/.config/app/other.toml"
+install -m 0644 "$d/other-source" "$d/repo/files/other.toml"
+printf '%s\t%s\t%s\n' "$d/other-source" ".config/app/other.toml" "files/other.toml" \
+  >> "$d/home/.local/state/nd/manifest"
+git -C "$d/repo" add -A
+git -C "$d/repo" commit -qm second
+drift "$d"
+install -m 0644 "$d/home/.config/app/config.toml" "$d/repo/files/config.toml"
+git -C "$d/repo" add -A
+git -C "$d/repo" commit -qm captured
+printf 'other = 2\n' > "$d/home/.config/app/other.toml"
+out=$(run_switch "$d"); st=$?
+check_status "a mixed run still refuses" 1 "$st"
+check "the mixed run blocks on the drifted file" "other.toml" "$out"
+check "the mixed run still reports the captured one" "the repo already holds the change" "$out"
+rm -rf "$d"
+
+# --build is documented as "build only, no sudo, no switch". It places nothing,
+# so the gate has nothing to protect — and blocking it removed the one
+# non-destructive way to see the situation while stuck behind the gate.
+#
+# The fixture's flake.nix is the same stub `{}` every other --build case in
+# this file builds against, so `nix build` always fails once it is reached —
+# there is no darwinConfigurations output to build. That failure exits
+# non-zero regardless of whether the gate blocked first, so exit status cannot
+# tell the two apart; reaching "building" at all is what proves the gate did
+# not exit first, exactly as the other --build cases above already rely on.
+d=$(new_fixture)
+drift "$d"
+out=$(run_switch "$d" --build)
+check "--build still names the drifted file" ".config/app/config.toml" "$out"
+check "--build says nothing is being placed" "nothing is being placed" "$out"
+check "--build reaches the build step" "building" "$out"
+check_not "--build does not threaten an overwrite" "OVERWRITTEN" "$out"
+check_not "--build does not say contents are discarded" "contents will be discarded" "$out"
+rm -rf "$d"
+
+# Both flag orders reach the build step, describe the situation with --build's
+# wording, and neither switches. --build is checked before --allow-dirty, so
+# neither order can produce the OVERWRITTEN/discarded wording: --build never
+# switches, whichever side of --allow-dirty it lands on, and that wording would
+# be false for a run that cannot discard anything.
+d=$(new_fixture)
+drift "$d"
+out=$(run_rollback "$d" --allow-dirty --build)
+check "--allow-dirty --build names the drifted file" ".config/app/config.toml" "$out"
+check "--allow-dirty --build says nothing is being placed" "nothing is being placed" "$out"
+check "--allow-dirty --build reaches the build step" "building" "$out"
+check_not "--allow-dirty --build does not threaten an overwrite" "OVERWRITTEN" "$out"
+check_not "--allow-dirty --build does not say contents are discarded" "contents will be discarded" "$out"
+rm -rf "$d"
+
+d=$(new_fixture)
+drift "$d"
+out=$(run_rollback "$d" --build --allow-dirty)
+check "--build --allow-dirty names the drifted file" ".config/app/config.toml" "$out"
+check "--build --allow-dirty says nothing is being placed" "nothing is being placed" "$out"
+check "--build --allow-dirty reaches the build step" "building" "$out"
+check_not "--build --allow-dirty does not threaten an overwrite" "OVERWRITTEN" "$out"
+check_not "--build --allow-dirty does not say contents are discarded" "contents will be discarded" "$out"
 rm -rf "$d"
 
 echo "nd-save"
@@ -852,6 +1010,159 @@ check_status "an uncomparable repo copy exits 1" 1 "$st"
 check "an uncomparable repo copy stops the copy" "initial" "$(git -C "$d/repo" log -1 --format=%s)"
 rm -rf "$d"
 
+# The other half of the deadlock. nd-save had already captured this content, so
+# there is nothing left to copy — but its unplaced-edit guard compared the repo
+# copy against the store source, found them different, and refused with "the
+# repo carries edits that were never placed", pointing at the switch that
+# nd-switch was simultaneously refusing to perform.
+d=$(new_fixture)
+drift "$d"
+install -m 0644 "$d/home/.config/app/config.toml" "$d/repo/files/config.toml"
+git -C "$d/repo" add -A
+git -C "$d/repo" commit -qm captured
+out=$(run_save "$d" -y); st=$?
+check_status "a captured file is not an error" 0 "$st"
+check "a captured file is named" "already in the repo" "$out"
+check "and the file is named" ".config/app/config.toml" "$out"
+check "and the user is sent to nd-switch" "run 'nd-switch' to place them" "$out"
+check_not "it is not refused as an unplaced edit" "never placed" "$out"
+check_not "and it does not claim everything still matches" "every placed file still matches" "$out"
+check "no commit was made" "captured" "$(git -C "$d/repo" log -1 --format=%s)"
+rm -rf "$d"
+
+# A repo copy that differs from what was placed and was never placed is still
+# refused. That is what the E14 guard is for, and the reclassification must not
+# reach it.
+d=$(new_fixture)
+drift "$d"
+printf 'my unplaced edit\n' > "$d/repo/files/config.toml"
+out=$(run_save "$d" -y); st=$?
+check_status "an unplaced repo edit is still refused" 1 "$st"
+check "the refusal still names it" "never placed" "$out"
+check "the repo edit survives" "my unplaced edit" "$(cat "$d/repo/files/config.toml")"
+rm -rf "$d"
+
+# A captured glob file. Not a deadlock — nd-switch never gated on new — but
+# nd-save refused with "already in the repo, never placed" about a file nd-save
+# itself put there one run earlier.
+#
+# The three assertions this case originally had — exit 0, "already in the
+# repo", and the absence of "never placed" — already catch the regression this
+# case exists for. Fold `captured` back into `candidates` and this glob record
+# (whose field 1 is the placeholder "-" from E7 — it has no file record) falls
+# to the blocker loop's `*)` arm, whose `src` lookup is keyed on a file record
+# ($4 == ""); the lookup comes back empty, "cannot tell what was placed here"
+# fires, and the run exits 1 — caught by `check_status ... 0` above. Drop
+# `captured` from nd-status instead, and the file reads as plain `new` with an
+# existing repo copy: "already in the repo, never placed" fires, and both
+# `check_status` and the `check_not` above go red.
+#
+# "no commit was made" below does not discriminate either regression, contrary
+# to what an earlier version of this comment claimed: this fixture's repo copy
+# is already byte-identical and committed, so even on the fold-in
+# `git status --porcelain -- "${paths[@]}"` is empty and nd-save exits at
+# "nothing to commit" before `git commit` ever runs — HEAD does not move
+# either way, and nothing here can make it. It stays anyway as cheap
+# insurance against an unrelated mistake: a future rewrite of the commit step
+# that fires regardless of what `git status` said.
+d=$(new_glob_fixture)
+printf '{"pinned":"abc"}\n' > "$d/home/.config/nv/lazy-lock.json"
+install -m 0644 "$d/home/.config/nv/lazy-lock.json" "$d/repo/files/nv/lazy-lock.json"
+git -C "$d/repo" add -A
+git -C "$d/repo" commit -qm captured
+out=$(run_save "$d" -y); st=$?
+check_status "a captured glob file is not an error" 0 "$st"
+check "a captured glob file is named" "already in the repo" "$out"
+check "and the file is named" "lazy-lock.json" "$out"
+check_not "and is not refused as never placed" "never placed" "$out"
+check "no commit was made" "captured" "$(git -C "$d/repo" log -1 --format=%s)"
+rm -rf "$d"
+
+# The commit leak: a managed repo path containing glob metacharacters,
+# alongside an unrelated
+# tracked file the glob would match that the user has modified in their own
+# working tree. Before nd_git, `git add -- "${paths[@]}"` staged the managed
+# path literally and the decoy by glob at the same time, and
+# `git commit --only -m "$msg" -- "${paths[@]}"` committed both — landing the
+# user's own unrelated edit in a commit whose message says it is someone
+# else's application config. The repo may be shared, so that was a data leak,
+# not a private mistake, and it defeated the very pathspec scoping written
+# just above the two lines that leaked, to prevent exactly that.
+d=$(new_fixture)
+printf 'meta = 1\n' > "$d/meta-source"
+chmod 0444 "$d/meta-source"
+install -m 0644 "$d/meta-source" "$d/home/.config/app/c[1].toml"
+install -m 0644 "$d/meta-source" "$d/repo/files/c[1].toml"
+printf '%s\t%s\t%s\n' "$d/meta-source" ".config/app/c[1].toml" "files/c[1].toml" \
+  >> "$d/home/.local/state/nd/manifest"
+printf 'decoy\n' > "$d/repo/files/c1.toml"
+git -C "$d/repo" add -A
+git -C "$d/repo" commit -qm "add the metacharacter file and the decoy"
+printf 'user edit to the decoy, never staged\n' > "$d/repo/files/c1.toml"
+printf 'meta = 2\n' > "$d/home/.config/app/c[1].toml"
+out=$(run_save "$d" -y)
+check "the glob-metacharacter path is still captured and committed" "committed" "$out"
+check "it lands at its own repo path" "meta = 2" "$(cat "$d/repo/files/c[1].toml")"
+check "the commit touches the managed path" "files/c[1].toml" \
+  "$(git -C "$d/repo" show --stat --format= HEAD)"
+check_not "the commit does not touch the decoy" "files/c1.toml" \
+  "$(git -C "$d/repo" show --stat --format= HEAD)"
+check_empty "the decoy is not left staged either" "$(git -C "$d/repo" diff --cached --name-only)"
+check "the decoy's working tree edit is untouched" "user edit to the decoy, never staged" \
+  "$(cat "$d/repo/files/c1.toml")"
+rm -rf "$d"
+
+# The staged-content guard (old :281) reads the same repo_rel as a pathspec. A
+# decoy whose *index* entry differs from HEAD, matched via glob, made the
+# guard compare the wrong path's index entry against HEAD and block the
+# managed path over content that was never staged on it at all.
+d=$(new_fixture)
+printf 'meta = 1\n' > "$d/meta-source"
+chmod 0444 "$d/meta-source"
+install -m 0644 "$d/meta-source" "$d/home/.config/app/c[1].toml"
+install -m 0644 "$d/meta-source" "$d/repo/files/c[1].toml"
+printf '%s\t%s\t%s\n' "$d/meta-source" ".config/app/c[1].toml" "files/c[1].toml" \
+  >> "$d/home/.local/state/nd/manifest"
+printf 'decoy\n' > "$d/repo/files/c1.toml"
+git -C "$d/repo" add -A
+git -C "$d/repo" commit -qm "add the metacharacter file and the decoy"
+printf 'staged decoy edit\n' > "$d/repo/files/c1.toml"
+git -C "$d/repo" add files/c1.toml
+printf 'meta = 2\n' > "$d/home/.config/app/c[1].toml"
+out=$(run_save "$d" -y); st=$?
+check_status "a staged decoy does not block the managed path" 0 "$st"
+check_not "the managed path is not refused over the decoy's staged content" \
+  "staged content this capture would replace" "$out"
+check "the managed path is still captured and committed" "files/c[1].toml" \
+  "$(git -C "$d/repo" show --stat --format= HEAD)"
+check_not "the decoy's staged edit is not swept into the commit" "files/c1.toml" \
+  "$(git -C "$d/repo" show --stat --format= HEAD)"
+check "the decoy's staged edit survives, untouched" "staged decoy edit" \
+  "$(git -C "$d/repo" show :files/c1.toml)"
+rm -rf "$d"
+
+# The untracked-path lookup (old :414) has the same defect in principle: a
+# tracked decoy matching a managed path's glob metacharacters would make
+# `git ls-files --error-unmatch -- "$p"` report the managed path as already
+# known to git when what actually matched was the decoy, which would wrongly
+# exclude the managed path from `untracked` — the array `unstage_captures`
+# resets on a non-commit exit.
+#
+# No case is added for it here because the failure cannot be observed through
+# that path with the recovery machinery as it stands. A decoy has to be
+# tracked in the index for `ls-files` to report a false match at all
+# (`ls-files` reads the index, not HEAD), and a repo with anything already in
+# the index necessarily already has an on-disk .git/index — which is exactly
+# the condition under which `index_backup` takes a full snapshot before this
+# run touches anything and restores it verbatim on decline, regardless of what
+# `untracked` says. Verified directly: running the pre-fix binary against a
+# fixture with a tracked decoy and a declined capture left the index exactly
+# as the fixed binary does, because the snapshot path fully masks the array
+# path whenever a decoy exists to trigger it. The array is still routed
+# through nd_git above, because it is still wrong on its own terms, but
+# nothing in this suite can currently tell the two versions apart by observed
+# behaviour.
+
 echo "nd-status"
 
 d=$(new_fixture)
@@ -1023,11 +1334,138 @@ check_status "an absent glob root exits 0" 0 "$st"
 check "an absent glob root reports its files missing" "missing	.config/nv/init.lua" "$out"
 rm -rf "$d"
 
+# The third state. The live file differs from the store source that placed it,
+# but the repo already holds that exact content, so the next switch rebuilds the
+# file FROM that copy and discards nothing. Classifying it as drifted is what
+# deadlocked nd-switch against nd-save: nd-switch refused to place it and
+# nd-save refused to re-capture it, each naming the other.
+d=$(new_fixture)
+drift "$d"
+install -m 0644 "$d/home/.config/app/config.toml" "$d/repo/files/config.toml"
+git -C "$d/repo" add -A
+git -C "$d/repo" commit -qm captured
+out=$(run_status "$d")
+check "a captured file is captured" "captured	.config/app/config.toml	files/config.toml" "$out"
+check_not "and is not drifted" "drifted" "$out"
+rm -rf "$d"
+
+# Uncommitted is still captured: nix builds a dirty tree from the working tree,
+# so the content is what gets placed. This is the state nd-save leaves behind
+# when its commit prompt is declined, and it is a legitimate way to get here.
+d=$(new_fixture)
+drift "$d"
+install -m 0644 "$d/home/.config/app/config.toml" "$d/repo/files/config.toml"
+out=$(run_status "$d")
+check "an uncommitted but tracked capture is captured" "captured	.config/app/config.toml" "$out"
+rm -rf "$d"
+
+# Untracked is NOT captured. Nix cannot see an untracked file at all — it fails
+# evaluation with "To make it visible to Nix, run: git add" — so a repo copy
+# that matches byte for byte but is untracked would not survive the switch.
+# Calling it captured would cost the user the file.
+d=$(new_fixture)
+drift "$d"
+git -C "$d/repo" rm -q --cached files/config.toml
+install -m 0644 "$d/home/.config/app/config.toml" "$d/repo/files/config.toml"
+out=$(run_status "$d")
+check "an untracked repo copy is still drifted" "drifted	.config/app/config.toml" "$out"
+check_not "and is not captured" "captured" "$out"
+rm -rf "$d"
+
+# A pathspec is not a path. `git ls-files -- "$repo_rel"` without
+# --literal-pathspecs reads a repo_rel containing [, * or ? as a glob, and it
+# can match a different tracked file at a different path — a tracked decoy
+# named files/c1.toml matched the pathspec files/c[1].toml and made an
+# untracked repo copy of that name report captured. It must stay drifted: the
+# untracked file it actually names would not survive a switch at all.
+d=$(new_fixture)
+printf 'decoy\n' > "$d/repo/files/c1.toml"
+git -C "$d/repo" add files/c1.toml
+git -C "$d/repo" commit -qm "add decoy"
+printf 'meta = 1\n' > "$d/meta-source"
+chmod 0444 "$d/meta-source"
+install -m 0644 "$d/meta-source" "$d/home/.config/app/c[1].toml"
+printf '%s\t%s\t%s\n' "$d/meta-source" ".config/app/c[1].toml" "files/c[1].toml" \
+  >> "$d/home/.local/state/nd/manifest"
+printf 'meta = 2\n' > "$d/home/.config/app/c[1].toml"
+install -m 0644 "$d/home/.config/app/c[1].toml" "$d/repo/files/c[1].toml"
+out=$(run_status "$d")
+check "a repo path with glob metacharacters is not read as a pathspec" \
+  "drifted	.config/app/c[1].toml	files/c[1].toml" "$out"
+check_not "and is not falsely captured via the tracked decoy" \
+  "captured	.config/app/c[1].toml" "$out"
+rm -rf "$d"
+
+d=$(new_fixture)
+drift "$d"
+out=$(run_status "$d")
+check "a repo copy that differs is still drifted" "drifted	.config/app/config.toml" "$out"
+rm -rf "$d"
+
+d=$(new_fixture)
+drift "$d"
+rm "$d/repo/files/config.toml"
+out=$(run_status "$d")
+check "an absent repo copy is still drifted" "drifted	.config/app/config.toml" "$out"
+rm -rf "$d"
+
+# Fails closed on a flake path that is not a repository at all: git cannot
+# answer, so the question is undecided, and undecided is never captured.
+d=$(new_fixture)
+drift "$d"
+install -m 0644 "$d/home/.config/app/config.toml" "$d/repo/files/config.toml"
+out=$(HOME="$d/home" ND_FLAKE="$d/nowhere" "$ND_STATUS" 2>&1)
+check "an absent flake is still drifted" "drifted	.config/app/config.toml" "$out"
+rm -rf "$d"
+
+# A directory where the repo copy should be. kind_for's own `[ ! -f
+# "$flake/$repo_rel" ]` guard rejects it — a directory is not a regular file —
+# before cmp is ever run, so this pins the guard rather than cmp's exit status;
+# it would catch a regression if the guard were removed and cmp were left to
+# meet the directory on its own. (cmp exiting 2 for "could not read one of
+# them" rather than 1 for "they differ" is real, and is exactly the reasoning
+# behind the unplaced-edit blocker in packages/nd-save.nix — its own tests are
+# the block above, around "an unplaced repo edit is still refused", not
+# further down this file; this case just does not reach it.)
+d=$(new_fixture)
+drift "$d"
+rm "$d/repo/files/config.toml"
+mkdir "$d/repo/files/config.toml"
+out=$(run_status "$d")
+check "a directory in the repo's place is still drifted" "drifted	.config/app/config.toml" "$out"
+rm -rf "$d"
+
+# The glob side. A file the application invented has no store source, so "did it
+# drift" is meaningless — but "is this exact content already in the repo, where
+# the next switch places it from" is the same question with the same answer.
+d=$(new_glob_fixture)
+printf '{"pinned":"abc"}\n' > "$d/home/.config/nv/lazy-lock.json"
+install -m 0644 "$d/home/.config/nv/lazy-lock.json" "$d/repo/files/nv/lazy-lock.json"
+git -C "$d/repo" add -A
+git -C "$d/repo" commit -qm captured
+out=$(run_status "$d")
+check "a captured glob file is captured" "captured	.config/nv/lazy-lock.json	files/nv/lazy-lock.json" "$out"
+check_not "and is not new" "new	.config/nv/lazy-lock.json" "$out"
+rm -rf "$d"
+
+d=$(new_glob_fixture)
+printf '{"pinned":"abc"}\n' > "$d/home/.config/nv/lazy-lock.json"
+out=$(run_status "$d")
+check "an uncaptured glob file is still new" "new	.config/nv/lazy-lock.json" "$out"
+rm -rf "$d"
+
+d=$(new_glob_fixture)
+printf '{"pinned":"abc"}\n' > "$d/home/.config/nv/lazy-lock.json"
+install -m 0644 "$d/home/.config/nv/lazy-lock.json" "$d/repo/files/nv/lazy-lock.json"
+out=$(run_status "$d")
+check "an untracked glob capture is still new" "new	.config/nv/lazy-lock.json" "$out"
+rm -rf "$d"
+
 echo
 echo "zsh notice"
 
 run_notice() {
-  HOME="$1/home" PATH="$(dirname "$ND_STATUS"):$PATH" \
+  HOME="$1/home" ND_FLAKE="$1/repo" PATH="$(dirname "$ND_STATUS"):$PATH" \
     zsh -f -c "source '$ND_NOTICE'; nd_notice" 2>&1
 }
 
@@ -1096,6 +1534,88 @@ check "a kind that only starts like a known one is not counted as it" "1 unrecog
 check_not "and it is not counted as new" "1 new" "$out"
 rm -rf "$d" "$stub_status"
 
+d=$(new_fixture)
+drift "$d"
+install -m 0644 "$d/home/.config/app/config.toml" "$d/repo/files/config.toml"
+git -C "$d/repo" add -A
+git -C "$d/repo" commit -qm captured
+out=$(run_notice "$d")
+check "a captured file is announced" "1 captured" "$out"
+check_not "and not as unrecognised" "unrecognised" "$out"
+check "a captured-only state advises nd-switch" "nd-switch" "$out"
+check_not "and does not advise nd-save" "nd-save" "$out"
+rm -rf "$d"
+
+# Captured and drifted together. nd-save still has work to do, so the advice
+# must not be diverted by the captured file.
+d=$(new_fixture)
+printf 'other = 1\n' > "$d/other-source"
+chmod 0444 "$d/other-source"
+install -m 0644 "$d/other-source" "$d/home/.config/app/other.toml"
+install -m 0644 "$d/other-source" "$d/repo/files/other.toml"
+printf '%s\t%s\t%s\n' "$d/other-source" ".config/app/other.toml" "files/other.toml" \
+  >> "$d/home/.local/state/nd/manifest"
+drift "$d"
+install -m 0644 "$d/home/.config/app/config.toml" "$d/repo/files/config.toml"
+git -C "$d/repo" add -A
+git -C "$d/repo" commit -qm captured
+printf 'other = 2\n' > "$d/home/.config/app/other.toml"
+out=$(run_notice "$d")
+check "both are counted" "1 drifted" "$out"
+check "captured is counted too" "1 captured" "$out"
+check "the advice stays nd-save while drift remains" "nd-save" "$out"
+rm -rf "$d"
+
+# Captured and missing together. The design calls this out by name: a switch
+# is what restores a missing file too, so `missing` must not divert the advice
+# away from nd-switch the way `drifted`, `new`, `unreadable` and `unrecognised`
+# do. Someone adding `missing` to that condition would break this silently,
+# because every other case in this file exercises `missing` alone, where it
+# reads the same either way.
+d=$(new_fixture)
+printf 'other = 1\n' > "$d/other-source"
+chmod 0444 "$d/other-source"
+install -m 0644 "$d/other-source" "$d/home/.config/app/other.toml"
+install -m 0644 "$d/other-source" "$d/repo/files/other.toml"
+printf '%s\t%s\t%s\n' "$d/other-source" ".config/app/other.toml" "files/other.toml" \
+  >> "$d/home/.local/state/nd/manifest"
+git -C "$d/repo" add -A
+git -C "$d/repo" commit -qm "add other"
+drift "$d"
+install -m 0644 "$d/home/.config/app/config.toml" "$d/repo/files/config.toml"
+git -C "$d/repo" add -A
+git -C "$d/repo" commit -qm captured
+rm "$d/home/.config/app/other.toml"
+out=$(run_notice "$d")
+check "captured and missing are both counted" "1 captured" "$out"
+check "missing is counted too" "1 missing" "$out"
+check "captured plus missing still advises nd-switch" "nd-switch" "$out"
+check_not "and does not fall back to nd-save" "nd-save" "$out"
+rm -rf "$d"
+
+# Captured and unreadable together. nd-save is where `unreadable` is explained
+# at length, so it must keep the nd-save advice even though nothing is drifted
+# or new — the opposite of the missing case just above.
+d=$(new_fixture)
+printf 'other = 1\n' > "$d/other-source"
+chmod 0444 "$d/other-source"
+install -m 0644 "$d/other-source" "$d/home/.config/app/other.toml"
+install -m 0644 "$d/other-source" "$d/repo/files/other.toml"
+printf '%s\t%s\t%s\n' "$d/other-source" ".config/app/other.toml" "files/other.toml" \
+  >> "$d/home/.local/state/nd/manifest"
+git -C "$d/repo" add -A
+git -C "$d/repo" commit -qm "add other"
+drift "$d"
+install -m 0644 "$d/home/.config/app/config.toml" "$d/repo/files/config.toml"
+git -C "$d/repo" add -A
+git -C "$d/repo" commit -qm captured
+rm -f "$d/other-source"
+out=$(run_notice "$d")
+check "captured and unreadable are both counted" "1 captured" "$out"
+check "unreadable is counted too" "1 unreadable" "$out"
+check "captured plus unreadable keeps the nd-save advice" "nd-save" "$out"
+rm -rf "$d"
+
 echo
 echo "end to end"
 
@@ -1129,6 +1649,46 @@ check_not "and it has not drifted" "drifted" "$out"
 # The loop closed: a second save has nothing to do.
 out=$(run_save "$d" -y)
 check "the loop is closed" "nothing to save" "$out"
+rm -rf "$d"
+
+# The deadlock from issue #1, start to finish. On v0.2.0 the second nd-switch
+# refuses and the second nd-save refuses, each naming the other, and no
+# sequence of the two clears it.
+d=$(new_fixture)
+drift "$d"
+
+out=$(run_switch "$d"); st=$?
+check_status "uncaptured drift refuses the switch" 1 "$st"
+check "and says to run nd-save" "run 'nd-save'" "$out"
+
+out=$(run_save "$d" -y)
+check "nd-save captures it" "copied back into the repo" "$out"
+check "nd-save commits it" "committed" "$out"
+check "the repo holds the live content" "setting = 2" "$(cat "$d/repo/files/config.toml")"
+
+# check_status against 0 is not reachable here: the fixture's flake.nix is a
+# bare "{}", so the real `nix build` this reaches always fails under errexit,
+# and that failure's exit 1 is indistinguishable from a gate refusal's exit 1
+# (see the "a missing file does not block" case above). What discriminates
+# the fix from the deadlock is whether the build step was reached at all: a
+# refusal exits before ever printing "building".
+out=$(run_switch "$d")
+check "and says why it is safe" "nothing is lost" "$out"
+check "and reaches the build" "building" "$out"
+
+# nd-save agrees there is nothing left for it, and sends the user to the switch
+# rather than refusing.
+out=$(run_save "$d" -y); st=$?
+check_status "nd-save is not an error either" 0 "$st"
+check "nd-save sends the user to nd-switch" "run 'nd-switch' to place them" "$out"
+
+# And the loop closes: place it, and everything matches again.
+install -m 0644 "$d/repo/files/config.toml" "$d/store-source-2"
+chmod 0444 "$d/store-source-2"
+printf '%s\t%s\t%s\n' "$d/store-source-2" ".config/app/config.toml" "files/config.toml" \
+  > "$d/home/.local/state/nd/manifest"
+out=$(run_status "$d")
+check_empty "after the switch nothing is reported at all" "$out"
 rm -rf "$d"
 
 echo
