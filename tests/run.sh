@@ -1078,6 +1078,92 @@ check_not "and is not refused as never placed" "never placed" "$out"
 check "no commit was made" "captured" "$(git -C "$d/repo" log -1 --format=%s)"
 rm -rf "$d"
 
+# The commit leak (C6 in docs/superpowers/escalations-2026-08-11-nd-captured.md):
+# a managed repo path containing glob metacharacters, alongside an unrelated
+# tracked file the glob would match that the user has modified in their own
+# working tree. Before nd_git, `git add -- "${paths[@]}"` staged the managed
+# path literally and the decoy by glob at the same time, and
+# `git commit --only -m "$msg" -- "${paths[@]}"` committed both — landing the
+# user's own unrelated edit in a commit whose message says it is someone
+# else's application config. The repo may be shared, so that was a data leak,
+# not a private mistake, and it defeated the very pathspec scoping written
+# just above the two lines that leaked, to prevent exactly that.
+d=$(new_fixture)
+printf 'meta = 1\n' > "$d/meta-source"
+chmod 0444 "$d/meta-source"
+install -m 0644 "$d/meta-source" "$d/home/.config/app/c[1].toml"
+install -m 0644 "$d/meta-source" "$d/repo/files/c[1].toml"
+printf '%s\t%s\t%s\n' "$d/meta-source" ".config/app/c[1].toml" "files/c[1].toml" \
+  >> "$d/home/.local/state/nd/manifest"
+printf 'decoy\n' > "$d/repo/files/c1.toml"
+git -C "$d/repo" add -A
+git -C "$d/repo" commit -qm "add the metacharacter file and the decoy"
+printf 'user edit to the decoy, never staged\n' > "$d/repo/files/c1.toml"
+printf 'meta = 2\n' > "$d/home/.config/app/c[1].toml"
+out=$(run_save "$d" -y)
+check "the glob-metacharacter path is still captured and committed" "committed" "$out"
+check "it lands at its own repo path" "meta = 2" "$(cat "$d/repo/files/c[1].toml")"
+check "the commit touches the managed path" "files/c[1].toml" \
+  "$(git -C "$d/repo" show --stat --format= HEAD)"
+check_not "the commit does not touch the decoy" "files/c1.toml" \
+  "$(git -C "$d/repo" show --stat --format= HEAD)"
+check_empty "the decoy is not left staged either" "$(git -C "$d/repo" diff --cached --name-only)"
+check "the decoy's working tree edit is untouched" "user edit to the decoy, never staged" \
+  "$(cat "$d/repo/files/c1.toml")"
+rm -rf "$d"
+
+# The staged-content guard (old :281) reads the same repo_rel as a pathspec. A
+# decoy whose *index* entry differs from HEAD, matched via glob, made the
+# guard compare the wrong path's index entry against HEAD and block the
+# managed path over content that was never staged on it at all.
+d=$(new_fixture)
+printf 'meta = 1\n' > "$d/meta-source"
+chmod 0444 "$d/meta-source"
+install -m 0644 "$d/meta-source" "$d/home/.config/app/c[1].toml"
+install -m 0644 "$d/meta-source" "$d/repo/files/c[1].toml"
+printf '%s\t%s\t%s\n' "$d/meta-source" ".config/app/c[1].toml" "files/c[1].toml" \
+  >> "$d/home/.local/state/nd/manifest"
+printf 'decoy\n' > "$d/repo/files/c1.toml"
+git -C "$d/repo" add -A
+git -C "$d/repo" commit -qm "add the metacharacter file and the decoy"
+printf 'staged decoy edit\n' > "$d/repo/files/c1.toml"
+git -C "$d/repo" add files/c1.toml
+printf 'meta = 2\n' > "$d/home/.config/app/c[1].toml"
+out=$(run_save "$d" -y); st=$?
+check_status "a staged decoy does not block the managed path" 0 "$st"
+check_not "the managed path is not refused over the decoy's staged content" \
+  "staged content this capture would replace" "$out"
+check "the managed path is still captured and committed" "files/c[1].toml" \
+  "$(git -C "$d/repo" show --stat --format= HEAD)"
+check_not "the decoy's staged edit is not swept into the commit" "files/c1.toml" \
+  "$(git -C "$d/repo" show --stat --format= HEAD)"
+check "the decoy's staged edit survives, untouched" "staged decoy edit" \
+  "$(git -C "$d/repo" show :files/c1.toml)"
+rm -rf "$d"
+
+# The untracked-path lookup (old :414) has the same defect in principle: a
+# tracked decoy matching a managed path's glob metacharacters would make
+# `git ls-files --error-unmatch -- "$p"` report the managed path as already
+# known to git when what actually matched was the decoy, which would wrongly
+# exclude the managed path from `untracked` — the array `unstage_captures`
+# resets on a non-commit exit.
+#
+# No case is added for it here because the failure cannot be observed through
+# that path with the recovery machinery as it stands. A decoy has to be
+# tracked in the index for `ls-files` to report a false match at all
+# (`ls-files` reads the index, not HEAD), and a repo with anything already in
+# the index necessarily already has an on-disk .git/index — which is exactly
+# the condition under which `index_backup` takes a full snapshot before this
+# run touches anything and restores it verbatim on decline, regardless of what
+# `untracked` says. Verified directly: running the pre-fix binary against a
+# fixture with a tracked decoy and a declined capture left the index exactly
+# as the fixed binary does, because the snapshot path fully masks the array
+# path whenever a decoy exists to trigger it. The array is still routed
+# through nd_git above, because it is still wrong on its own terms, but
+# nothing in this suite can currently tell the two versions apart by observed
+# behaviour. See C6 in docs/superpowers/escalations-2026-08-11-nd-captured.md
+# for the fuller reasoning.
+
 echo "nd-status"
 
 d=$(new_fixture)

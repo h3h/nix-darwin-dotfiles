@@ -121,7 +121,37 @@ writeShellApplication {
       exit 1
     fi
 
-    if ! git -C "$flake" rev-parse --git-dir > /dev/null 2>&1; then
+    # Every git invocation in this file goes through nd_git, and it is not a
+    # convenience wrapper. A pathspec is not a path: without
+    # --literal-pathspecs, a repo-relative path containing [, * or ? is read as
+    # a glob and can match a different tracked file at a different location.
+    # nd-status hit the mild version of this first (see kind_for in
+    # nd-status.nix) — a false "captured" report about a file that would not
+    # survive a switch. nd-save's version is a data leak, not a misreport:
+    # given a managed path `files/c[1].toml` and an unrelated tracked file
+    # `files/c1.toml` that the user has modified in their own working tree,
+    # `git add -- "''${paths[@]}"` matches the managed path literally and the
+    # decoy by glob, staging both, and `git commit --only -m "$msg" --
+    # "''${paths[@]}"` commits both — into a commit whose message says it is
+    # someone else's application config. That is exactly the leak the pathspec
+    # scoping a few hundred lines down exists to prevent (see the comment
+    # there), defeated by the very pathspecs meant to prevent it, because a
+    # pathspec silently matches more than the path it was given.
+    #
+    # Nine call sites below take a pathspec, and all nine had this defect:
+    # nine separate places each had to remember --literal-pathspecs, and nine
+    # separate places each forgot. Fixing only the ones a reviewer happens to
+    # notice — or even all nine, by hand, one at a time — leaves the tenth
+    # call, the one added to this file next year, exposed, with nothing to
+    # stop it being the next place to forget. Routing every git invocation
+    # through nd_git, including the six below that take no pathspec at all,
+    # closes that gap structurally rather than by vigilance: uniformity is the
+    # point, and an exception is a place to forget.
+    nd_git() {
+      git --literal-pathspecs -C "$flake" "$@"
+    }
+
+    if ! nd_git rev-parse --git-dir > /dev/null 2>&1; then
       echo "nd-save: $flake is not a git repository" >&2
       exit 1
     fi
@@ -130,7 +160,7 @@ writeShellApplication {
     # code printed the branch to a terminal nobody is reading and committed
     # regardless, so the unattended path — the one -y exists for — was the only
     # path with no check.
-    branch="$(git -C "$flake" branch --show-current)"
+    branch="$(nd_git branch --show-current)"
 
     if [ -z "$branch" ]; then
       echo "nd-save: HEAD is detached in $flake — refusing." >&2
@@ -278,7 +308,7 @@ writeShellApplication {
       if [ -z "''${dest:-}" ]; then
         continue
       fi
-      if ! git -C "$flake" diff --cached --quiet -- "$repo_rel"; then
+      if ! nd_git diff --cached --quiet -- "$repo_rel"; then
         blockers="$blockers$repo_rel (staged content this capture would replace)
     "
         continue
@@ -396,7 +426,10 @@ writeShellApplication {
     # unstaged edit and hid every staged one; and a bare `commit` swept the
     # whole index into a commit whose message says it is application-written
     # config. The repo may be shared, so that is a data leak, not a private
-    # mistake.
+    # mistake. A pathspec that names the wrong thing is the same mistake with
+    # extra steps, which is why every one of these goes through nd_git (see
+    # its comment, above the git-dir check near the top of this file) rather
+    # than a bare `git -C "$flake"`.
     #
     # --intent-to-add makes a newly captured file visible to `diff HEAD`, which
     # otherwise shows nothing for an untracked path, and makes it a pathspec
@@ -411,14 +444,14 @@ writeShellApplication {
     # staging the user did themselves.
     untracked=()
     for p in "''${paths[@]}"; do
-      if ! git -C "$flake" ls-files --error-unmatch -- "$p" > /dev/null 2>&1; then
+      if ! nd_git ls-files --error-unmatch -- "$p" > /dev/null 2>&1; then
         untracked+=("$p")
       fi
     done
 
     unstage_captures() {
       if [ "''${#untracked[@]}" -gt 0 ]; then
-        git -C "$flake" reset -q -- "''${untracked[@]}"
+        nd_git reset -q -- "''${untracked[@]}"
       fi
     }
 
@@ -431,7 +464,7 @@ writeShellApplication {
     #
     # `--git-path` is resolved relative to the repository, which is where every
     # git invocation here already runs, and it honours a redirected index.
-    index_file="$(git -C "$flake" rev-parse --git-path index)"
+    index_file="$(nd_git rev-parse --git-path index)"
     case "$index_file" in
       /*) ;;
       *) index_file="$flake/$index_file" ;;
@@ -472,12 +505,12 @@ writeShellApplication {
     # commit already made. Restoring the index there would revert a capture
     # that is in HEAD, so the flag is backed by an invariant — if HEAD moved,
     # this run committed, whatever the flag says.
-    head_before="$(git -C "$flake" rev-parse --verify --quiet HEAD || true)"
+    head_before="$(nd_git rev-parse --verify --quiet HEAD || true)"
 
     committed=""
     on_exit() {
       local head_now
-      head_now="$(git -C "$flake" rev-parse --verify --quiet HEAD || true)"
+      head_now="$(nd_git rev-parse --verify --quiet HEAD || true)"
       if [ -z "$committed" ] && [ "$head_now" = "$head_before" ]; then
         restore_index
       fi
@@ -488,9 +521,9 @@ writeShellApplication {
     trap on_exit EXIT
     trap 'exit 130' INT
 
-    git -C "$flake" add --intent-to-add -- "''${paths[@]}"
+    nd_git add --intent-to-add -- "''${paths[@]}"
 
-    if [ -z "$(git -C "$flake" status --porcelain -- "''${paths[@]}")" ]; then
+    if [ -z "$(nd_git status --porcelain -- "''${paths[@]}")" ]; then
       echo "nd-save: copies are identical to the committed versions, nothing to commit"
       exit 0
     fi
@@ -502,10 +535,10 @@ writeShellApplication {
     # Against an unborn HEAD the comparison that means the same thing is the
     # working tree against the index, which the intent-to-add entries above
     # make complete.
-    if git -C "$flake" rev-parse --verify --quiet HEAD > /dev/null; then
-      git -C "$flake" --no-pager diff HEAD -- "''${paths[@]}"
+    if nd_git rev-parse --verify --quiet HEAD > /dev/null; then
+      nd_git --no-pager diff HEAD -- "''${paths[@]}"
     else
-      git -C "$flake" --no-pager diff -- "''${paths[@]}"
+      nd_git --no-pager diff -- "''${paths[@]}"
     fi
     echo
 
@@ -541,14 +574,14 @@ writeShellApplication {
       msg="$(derive_subject)"
     fi
 
-    git -C "$flake" add -- "''${paths[@]}"
+    nd_git add -- "''${paths[@]}"
 
     # A commit can fail for reasons that have nothing to do with nd-save: a
     # pre-commit hook that rejects the content, commit.gpgsign with no key, a
     # full disk. Under errexit that was a silent exit with the capture left
     # fully staged — exactly the state a later `git commit -am` sweeps up. git
     # has already said why on stderr; this says what it means for the repo.
-    if ! git -C "$flake" commit --only -m "$msg" -- "''${paths[@]}"; then
+    if ! nd_git commit --only -m "$msg" -- "''${paths[@]}"; then
       echo "nd-save: the commit failed, so nothing was committed." >&2
       echo "nd-save: the files are still copied into the repo working tree." >&2
       if [ -n "$index_backup" ]; then

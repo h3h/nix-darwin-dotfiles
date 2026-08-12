@@ -256,7 +256,7 @@ passed.
 
 ## C6 — the analogous pathspec-not-a-path defect in `nd-save`, and the commit leak it enables, is left alone
 
-**Status:** deferred to the maintainer
+**Status:** resolved
 
 The final whole-branch review (2026-08-11) found that `nd-status`'s
 `kind_for` passed `$repo_rel` to `git ls-files --error-unmatch -- "$repo_rel"`
@@ -328,6 +328,93 @@ never asked for. The maintainer can decide whether `nd-save` gets the same
 should treat it as one change covering all nine sites, not just the two a
 first pass happens to notice, since the two that actually write history
 (:544, :551) are not the two most readers would find first.
+
+**Resolution (2026-08-12).** The maintainer asked for this fix as its own,
+separately reviewed change, exactly the path this entry left open. Before
+writing anything, the leak was reproduced against the built (pre-fix)
+`nd-save`: a fixture with the managed path `files/c[1].toml`, a tracked decoy
+`files/c1.toml` modified in the working tree, and a drift on the managed
+file. Running `nd-save -y` committed both files into HEAD, and the
+pre-commit preview showed the decoy's diff alongside the real one — the exact
+behaviour this entry described, confirmed rather than assumed.
+
+What shipped is not nine independent `--literal-pathspecs` flags. Every `git
+-C "$flake"` call in the file — the nine that take a pathspec, and the six
+that do not (`rev-parse --git-dir`, `branch --show-current`, `rev-parse
+--git-path index`, both `rev-parse --verify --quiet HEAD` calls, and
+`rev-parse --verify --quiet HEAD > /dev/null`) — now goes through one
+function:
+
+```
+nd_git() {
+  git --literal-pathspecs -C "$flake" "$@"
+}
+```
+
+The reasoning, recorded in a comment above the function: nine separate call
+sites each had to remember the flag, and nine separate sites each forgot it.
+Patching only the nine named above — even patching all nine by hand, one at a
+time — leaves the tenth call, the one added to this file next year, with
+nothing to remind it. Routing every invocation through `nd_git`, including
+the six that carry no pathspec at all, turns "remember the flag" into
+"there is only one way to call git here" — an exception in that list would
+have been a tenth place to forget, so there isn't one. This is the same
+uniformity argument `nd-status.nix`'s `kind_for` comment makes for its own
+single call site, generalised to a file with fifteen.
+
+One mechanical wrinkle: `git -C "$flake" --no-pager diff HEAD -- ...` needed
+`--no-pager` to stay a main-command option ahead of the `diff` subcommand
+inside `nd_git`'s argument list (`nd_git --no-pager diff HEAD -- ...`
+expands to `git --literal-pathspecs -C "$flake" --no-pager diff HEAD --
+...`, which is valid, since `--literal-pathspecs`, `-C` and `--no-pager` are
+all main-command options and none of them follow the subcommand). Every
+`$( )` capture, `if !` condition and `|| true`/`> /dev/null 2>&1` exit-status
+consumer keeps its original semantics, because `nd_git` is a plain
+pass-through function, not a subshell or a status-swallowing wrapper.
+
+**Tests that pin it**, added to the `nd-save` section of `tests/run.sh`:
+
+- "the glob-metacharacter path is still captured and committed" and its
+  neighbours — the commit-leak fixture itself: a managed `files/c[1].toml`
+  plus a tracked, working-tree-modified `files/c1.toml`, drifted and saved.
+  Asserts the decoy is in neither the commit nor the index, that its working
+  tree is untouched, and that the managed file is still captured and
+  committed correctly — the fix must not cost the real path its coverage.
+- "a staged decoy does not block the managed path" and its neighbours — the
+  staged-content guard at old :281, with the decoy's *index* entry (not its
+  working tree) differing from HEAD. Before the fix this guard consulted the
+  decoy's index entry while reporting on the managed path's name; the case
+  asserts the guard now reaches the correct decision — no block — for the
+  real path, and that the decoy's own staged edit is neither swept into the
+  commit nor disturbed.
+
+The untracked-path lookup (old :414, feeding `unstage_captures`) was
+considered for a third case and left without one, on the record rather than
+by omission: a decoy has to be tracked in the index for `ls-files` to report
+a false match at all, and a repo with anything in the index already has an
+on-disk `.git/index` — which is exactly the condition under which nd-save's
+own index-snapshot restore (added for a different reason: it also recovers
+staging on a *tracked* managed path, which a path-scoped reset cannot)
+already restores the whole index verbatim on decline, independent of what the
+lookup's `untracked` array says. Verified directly: the pre-fix binary,
+run against a fixture with a tracked decoy and a declined capture, left the
+index in exactly the state the fixed binary does, because the snapshot path
+fully masks the array path whenever a decoy exists to trigger it. The call is
+still routed through `nd_git` — it is still wrong on its own terms — but
+nothing observable in this suite currently distinguishes the two versions
+through it.
+
+Full verification: `nix build --no-link --print-out-paths .#nd-switch
+.#nd-save .#nd-status`, then `tests/run.sh` against the three resulting
+binaries, reported
+
+```
+passed 313, failed 0
+```
+
+— the 302 this branch closed with, plus the eleven new checks above. `nix
+flake check` passed: `tests`, `module`, `glob` and `glob-engines` all built
+clean.
 
 ## C7 — documentation corrections found during the final review, gathered into one entry
 
@@ -453,74 +540,36 @@ line is kept anyway.
 
 ## Closing state
 
-8 of 9 entries are resolved. **One is deliberately left open for the
-maintainer**, because deciding it means deciding to widen this branch's
-reviewable surface into code the design never named, not something an
-implementer should settle unilaterally:
+9 of 9 entries are resolved. Nothing is left open for the maintainer.
 
-- **C6 — should `packages/nd-save.nix` get the same `--literal-pathspecs`
-  treatment `nd-status.nix` got, and if so, when?** `nd-status`'s `kind_for`
-  had the same defect and was fixed in this branch, because the design's
-  `captured` classification runs through it directly. `nd-save` was not
-  touched, on the reasoning that this branch's approved surface is the
-  `captured` kind and two named `nd-switch` defects, and fixing an unrelated
-  bug shape the moment it is noticed elsewhere is how a reviewable branch
-  stops being reviewable.
+C6 was the one exception, and it closed the way its own text anticipated: the
+maintainer asked for the fix as a separate, dedicated change, and it landed as
+one. `packages/nd-save.nix` now routes every `git -C "$flake"` call —
+including the six that take no pathspec — through a single `nd_git()` helper
+defined in the file (`git --literal-pathspecs -C "$flake" "$@"`), rather than
+nine independent `--literal-pathspecs` flags: the point was to make "call git
+with a pathspec, unguarded" structurally impossible in this file, not merely
+absent from the nine sites a review happened to find. The defect was
+reproduced against the pre-fix binary before any code changed — a managed
+path `files/c[1].toml` alongside a modified, tracked decoy `files/c1.toml`
+was committed together by `nd-save -y`, with the decoy's diff also shown in
+the pre-commit preview — and re-checked afterward to confirm the decoy no
+longer appears in the commit, the index, or the preview, while the managed
+path is still captured and committed correctly. See C6's own entry above for
+the full account, including the one call site (the untracked-path lookup
+feeding `unstage_captures`) whose fix could not be pinned with an observable
+test, and why.
 
-  The argument for leaving it to a separate, dedicated change is exactly that
-  scoping argument: a reviewer who approved "the `captured` kind" did not
-  thereby approve changes to `nd-save`'s capture path, and folding it in here
-  means either a bigger diff than the design doc describes or a fix that
-  arrives without its own review. The argument for fixing it now is severity:
-  this is not the same shape of bug as the `nd-status` misclassification,
-  which costs a wrong report. Two of the nine sites can stage and commit an
-  *unrelated* tracked file into a commit whose message is about someone
-  else's application config, in a repo the design already assumes may be
-  shared. A maintainer may reasonably decide that severity overrides scope
-  discipline for this one fix even though it didn't for everything else this
-  review found.
-
-  **Current behaviour:** all nine sites in `packages/nd-save.nix` pass a
-  repo-relative path to git as a pathspec, not a literal path, exactly as
-  `nd-status`'s `kind_for` did before this branch fixed it there:
-
-  - `git -C "$flake" diff --cached --quiet -- "$repo_rel"` (:281)
-  - `git -C "$flake" ls-files --error-unmatch -- "$p"` (:414)
-  - `git -C "$flake" reset -q -- "${untracked[@]}"` (:421)
-  - `git -C "$flake" add --intent-to-add -- "${paths[@]}"` (:491)
-  - `git -C "$flake" status --porcelain -- "${paths[@]}"` (:493)
-  - `git -C "$flake" --no-pager diff HEAD -- "${paths[@]}"` (:506)
-  - `git -C "$flake" --no-pager diff -- "${paths[@]}"` (:508)
-  - `git -C "$flake" add -- "${paths[@]}"` (:544)
-  - `git -C "$flake" commit --only -m "$msg" -- "${paths[@]}"` (:551)
-
-  A managed repo path containing `[`, `*` or `?`, alongside an unrelated
-  tracked file the user has modified that happens to glob-match it, makes
-  the last two of these (:544, :551) stage and commit the unrelated file too
-  — verified against real git, not assumed. The other seven can misdirect a
-  comparison, a reset, or the diff preview shown before the confirmation
-  prompt, which is a smaller failure with the same root cause.
-
-  **Tests that pin it:** none, on either side of the question. Unlike
-  `nd-status`, which has "a repo path with glob metacharacters is not read as
-  a pathspec" and "and is not falsely captured via the tracked decoy" in
-  `tests/run.sh` pinning the fixed behaviour, `nd-save` has no test — buggy
-  or fixed — that exercises a managed path containing glob metacharacters
-  against an unrelated tracked decoy. Changing the answer here means writing
-  that coverage from nothing, alongside whichever fix `packages/nd-save.nix`
-  gets: a decoy fixture analogous to `nd-status`'s, run through `nd-save`,
-  asserting the decoy is untouched by `git add`/`git commit --only` after a
-  capture of the glob-named path.
-
-**Final verification**, run after all five fixes above and this closing
-section landed: the suite (built via `nix build --no-link --print-out-paths
-.#nd-switch .#nd-save .#nd-status`, then `bash tests/run.sh` against the
-three resulting binaries) reported
+**Final verification**, run after C6 landed on top of the other five fixes
+and this closing section: the suite (built via `nix build --no-link
+--print-out-paths .#nd-switch .#nd-save .#nd-status`, then `bash
+tests/run.sh` against the three resulting binaries) reported
 
 ```
-passed 302, failed 0
+passed 313, failed 0
 ```
 
-— 298 pre-existing plus the four new checks from the added
-`--allow-dirty` + captured case. `nix flake check` passed: `tests`,
-`module`, `glob` and `glob-engines` all built clean.
+— the 302 this branch closed with before C6, plus eleven new checks: two
+`nd-save` fixtures pinning the commit leak and the staged-content guard
+against a glob-metacharacter managed path and a tracked decoy. `nix flake
+check` passed: `tests`, `module`, `glob` and `glob-engines` all built clean.
