@@ -220,18 +220,19 @@ writeShellApplication {
       exit 0
     fi
 
-    if [ -n "$allow_dirty" ]; then
-      # Checked before --build: --allow-dirty already reaches the build step
-      # without blocking, so a caller who passed both gets the discard warning
-      # they asked for with --allow-dirty rather than the --build wording, and
-      # every existing --allow-dirty case keeps the exact text it always had
-      # whether or not --build rides along with it.
-      report_status "--allow-dirty"
-    elif [ -n "$build_only" ]; then
+    if [ -n "$build_only" ]; then
+      # Checked before --allow-dirty: --build never switches, even when
+      # --allow-dirty rides along, so the OVERWRITTEN/discarded wording would
+      # be false for this invocation — and a false warning teaches the user to
+      # skim the true one. A caller who wants the discard warning gets it on
+      # the run that can actually discard: a switch without --build.
+      #
       # Reports everything and refuses nothing. --build cannot discard drift
       # because it places nothing, and the gate blocking it took away the only
       # non-destructive way to inspect the state while stuck behind the gate.
       report_status "--build" || true
+    elif [ -n "$allow_dirty" ]; then
+      report_status "--allow-dirty"
     else
       if ! report_status ""; then
         exit 1

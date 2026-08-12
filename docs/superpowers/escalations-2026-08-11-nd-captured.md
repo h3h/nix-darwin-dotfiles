@@ -59,7 +59,7 @@ because the brief predicted breakage that a full run did not reproduce, and
 recording why closes the loop rather than leaving a silent gap between what
 Step 7 asked for and what the diff shows.
 
-## C2 — `--allow-dirty --build` keeps the `--allow-dirty` label, not `--build`
+## C2 — `--allow-dirty --build` keeps the `--allow-dirty` label, not `--build` — reversed
 
 **Status:** resolved
 
@@ -80,27 +80,50 @@ already call `run_switch "$d" --build --allow-dirty`, and assert the
 written was verified empirically (build + `tests/run.sh`) to turn all three
 red, because the label those cases depend on stopped being chosen.
 
-The global constraint for this task is explicit and stronger than the
-brief's stated rationale: "The existing `--allow-dirty` and `--rollback`
-cases must keep their current wording and behaviour exactly." That rules out
-the brief's ordering as written. The fix was to swap the two branches —
-`allow_dirty` is checked first, so `--allow-dirty` alone or combined with
-`--build` keeps producing the exact wording it always has, and `build_only`
-only gets its own `--build` label when `--allow-dirty` was not also given.
-This still satisfies the task's actual interface requirement ("`--build`
-reaches the build step whatever `nd-status` found"): both branches call
-`report_status` in a way that never returns 1, so `--build` is unblocked
-whether or not `--allow-dirty` rides along with it — only the wording used
-when both are present differs from the brief's draft, in favor of the
-wording the existing suite already pins.
+The decision originally taken here was to swap the two branches so
+`allow_dirty` is checked before `build_only`: `--allow-dirty` alone or
+combined with `--build` would then keep producing the wording those three
+cases pinned, and `build_only` would only get its own `--build` label when
+`--allow-dirty` was not also given. That was read at the time as required by
+this task's stronger, explicit constraint — "the existing `--allow-dirty` and
+`--rollback` cases must keep their current wording and behaviour exactly" —
+which appeared to rule out the brief's ordering as written.
 
-The brief's own comment ("Checked before --allow-dirty so that the two
-together still describe what is actually about to happen, which is a build")
-was not reproduced, since it would misdescribe the code actually shipped;
-Task 3 exists in part to remove a comment that no longer matches the code; it
-would defeat the point to add a fresh one that doesn't from the start. The
-new comment above the swapped branches explains the actual chosen order
-instead.
+This was escalated and has been overruled. The adjudicator ran the built
+`nd-switch` against a reproduction of `new_fixture` with a tracing `sudo`
+stub and confirmed empirically that `--build --allow-dirty` never switches
+regardless of branch order: `nd-switch` runs under `errexit`, the fixture's
+`flake.nix` is a bare `{}`, so `nix build` fails and the script exits before
+`sudo darwin-rebuild` is ever reached — sudo was never invoked. `--build` in
+those three test invocations is therefore belt-and-braces and does no work;
+the tests pin `--allow-dirty`'s wording, not `--build`'s. The swapped code
+printed a warning about an overwrite that cannot happen for this
+invocation — the same wording-diverging-from-action defect this whole area of
+the code exists to prevent, reintroduced by the fix meant to protect it.
+
+Escalation C4 in this same log already applied the identical reasoning to a
+different pre-existing test: `--build` there was incidental to what the case
+tested (the plain drift gate), so C4 changed the incidental test to fit
+correct code rather than bending the code to fit the incidental flag. C2's
+three tests are in exactly that position, and the original resolution did the
+reverse: it changed correct code to fit an incidental invocation.
+
+The "existing `--allow-dirty` cases keep their current wording exactly"
+constraint protects the assertions, not the specific invocation that reaches
+them. Every one of those assertions is unchanged. What shipped instead:
+`build_only` is checked before `allow_dirty` (matching the brief's original
+order), the comment above that branch explains why — `--build` never
+switches even when `--allow-dirty` rides along, so the OVERWRITTEN/discarded
+wording would be false for that invocation, and a caller who wants the
+discard warning gets it on a run that can actually discard, i.e. a switch
+without `--build` — and the three pre-existing test invocations had `--build`
+dropped, with the two drifted-fixture cases routed through `run_rollback`
+instead of `run_switch` so a stubbed `sudo` stays on `PATH` as a backstop.
+Their assertions are pinned character-for-character on a run that can
+actually discard, instead of on one that never could. The swap had also cost
+the suite the stronger combined-flag assertions (drifted file named, "nothing
+is being placed", no `OVERWRITTEN`, no `contents will be discarded`, for both
+flag orders); those are restored as part of this reversal.
 
 ## C3 — three new `--build` regression assertions cannot rely on real `nix build` succeeding
 

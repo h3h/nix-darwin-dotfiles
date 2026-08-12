@@ -179,7 +179,7 @@ rm -rf "$d"
 # and say it before `nix build` and before the sudo prompt.
 d=$(new_fixture)
 drift "$d"
-out=$(run_switch "$d" --build --allow-dirty)
+out=$(run_rollback "$d" --allow-dirty)
 check "--allow-dirty names what it will discard" "will be OVERWRITTEN" "$out"
 check "--allow-dirty names the file" ".config/app/config.toml" "$out"
 check "--allow-dirty says the contents go" "contents will be discarded" "$out"
@@ -192,7 +192,7 @@ rm -rf "$d"
 # for anything, or there is nothing left to interrupt.
 d=$(new_fixture)
 drift "$d"
-out=$(run_switch "$d" --build --allow-dirty)
+out=$(run_rollback "$d" --allow-dirty)
 check "the discard warning precedes the build" "OVERWRITTEN" \
   "$(printf '%s\n' "$out" | sed -n '1,/building/p')"
 rm -rf "$d"
@@ -247,7 +247,7 @@ rm -rf "$d"
 # --allow-dirty suppresses the block, not the reports.
 d=$(new_fixture)
 rm "$d/home/.config/app/config.toml"
-out=$(run_switch "$d" --build --allow-dirty)
+out=$(run_switch "$d" --allow-dirty)
 check "--allow-dirty still reports missing" "will be restored" "$out"
 rm -rf "$d"
 
@@ -350,25 +350,29 @@ check_not "--build does not threaten an overwrite" "OVERWRITTEN" "$out"
 check_not "--build does not say contents are discarded" "contents will be discarded" "$out"
 rm -rf "$d"
 
-# Both flag orders reach the build step and neither switches. A comment in
-# nd-switch claimed --allow-dirty --build fell through to a real switch because
-# --build was never consumed; it does not, and this pins that rather than the
-# comment. "building" is the reachable half of that claim in this fixture, per
-# the note above; "darwin-rebuild" never appearing is the other half, since
-# reaching it needs a successful build this stub flake cannot produce either
-# way — nothing about --build's own handling can make it appear.
+# Both flag orders reach the build step, describe the situation with --build's
+# wording, and neither switches. --build is checked before --allow-dirty, so
+# neither order can produce the OVERWRITTEN/discarded wording: --build never
+# switches, whichever side of --allow-dirty it lands on, and that wording would
+# be false for a run that cannot discard anything.
 d=$(new_fixture)
 drift "$d"
 out=$(run_rollback "$d" --allow-dirty --build)
+check "--allow-dirty --build names the drifted file" ".config/app/config.toml" "$out"
+check "--allow-dirty --build says nothing is being placed" "nothing is being placed" "$out"
 check "--allow-dirty --build reaches the build step" "building" "$out"
-check_not "--allow-dirty --build does not switch" "darwin-rebuild" "$out"
+check_not "--allow-dirty --build does not threaten an overwrite" "OVERWRITTEN" "$out"
+check_not "--allow-dirty --build does not say contents are discarded" "contents will be discarded" "$out"
 rm -rf "$d"
 
 d=$(new_fixture)
 drift "$d"
 out=$(run_rollback "$d" --build --allow-dirty)
+check "--build --allow-dirty names the drifted file" ".config/app/config.toml" "$out"
+check "--build --allow-dirty says nothing is being placed" "nothing is being placed" "$out"
 check "--build --allow-dirty reaches the build step" "building" "$out"
-check_not "--build --allow-dirty does not switch" "darwin-rebuild" "$out"
+check_not "--build --allow-dirty does not threaten an overwrite" "OVERWRITTEN" "$out"
+check_not "--build --allow-dirty does not say contents are discarded" "contents will be discarded" "$out"
 rm -rf "$d"
 
 echo "nd-save"
