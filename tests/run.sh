@@ -1027,6 +1027,14 @@ rm -rf "$d"
 # A captured glob file. Not a deadlock — nd-switch never gated on new — but
 # nd-save refused with "already in the repo, never placed" about a file nd-save
 # itself put there one run earlier.
+#
+# The three assertions this case originally had — exit 0, "already in the
+# repo", and the absence of "never placed" — all still pass if a future change
+# moves `captured` back into `candidates`: the captured report block prints
+# regardless, and the file would simply be copied (a no-op, since the content
+# already matches) and committed underneath the unchanged report. "no commit
+# was made" is the assertion that actually distinguishes a report from a copy,
+# matching the one a few blocks above for the file-record case.
 d=$(new_glob_fixture)
 printf '{"pinned":"abc"}\n' > "$d/home/.config/nv/lazy-lock.json"
 install -m 0644 "$d/home/.config/nv/lazy-lock.json" "$d/repo/files/nv/lazy-lock.json"
@@ -1035,7 +1043,9 @@ git -C "$d/repo" commit -qm captured
 out=$(run_save "$d" -y); st=$?
 check_status "a captured glob file is not an error" 0 "$st"
 check "a captured glob file is named" "already in the repo" "$out"
+check "and the file is named" "lazy-lock.json" "$out"
 check_not "and is not refused as never placed" "never placed" "$out"
+check "no commit was made" "captured" "$(git -C "$d/repo" log -1 --format=%s)"
 rm -rf "$d"
 
 echo "nd-status"
