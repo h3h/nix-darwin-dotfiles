@@ -254,7 +254,7 @@ Re-run after the change: 279 passed, 0 failed — the full suite, including
 this block and the floor of 269 pre-existing checks. `nix flake check` also
 passed.
 
-## C6 — the analogous pathspec-not-a-path defect in `nd-save` is left alone
+## C6 — the analogous pathspec-not-a-path defect in `nd-save`, and the commit leak it enables, is left alone
 
 **Status:** deferred to the maintainer
 
@@ -271,20 +271,51 @@ user would lose it on the next switch. This was fixed in `nd-status.nix` with
 tracked decoy plus an untracked repo copy named with glob metacharacters,
 asserting `drifted`, not `captured`).
 
-The same defect exists, unfixed, in two places in `packages/nd-save.nix`:
+A re-review found the same defect at nine call sites in `packages/nd-save.nix`,
+and, verified against real git rather than assumed, a worse consequence than
+the misclassification above: given a managed repo path `files/c[1].toml` and
+an unrelated tracked file `files/c1.toml` that the user has modified in their
+own working tree, `git add -- "${paths[@]}"` (:544) stages **both** — git
+matches the literal path exactly and the decoy by glob — and
+`git commit --only -m "$msg" -- "${paths[@]}"` (:551) commits both. That is
+precisely the leak the comment written directly above those two lines exists
+to prevent: "The repo may be shared, so that is a data leak, not a private
+mistake." The defect that comment is warning about, and the defect that
+defeats the scoping it is describing, are the same defect.
 
-- `git -C "$flake" diff --cached --quiet -- "$repo_rel"`, in the staged-content
-  guard that runs ahead of the unplaced-edit blocker;
-- `git -C "$flake" ls-files --error-unmatch -- "$p"`, in the loop that decides
-  which newly captured paths were untracked before `git add --intent-to-add`,
-  so `unstage_captures`/`on_exit` knows what to reset on a non-commit exit.
+Fixing only the two call sites this entry originally named — the
+staged-content guard and the untracked-path lookup, below — would leave that
+commit leak fully in place: neither of those two lines is the `add` or the
+`commit --only`. All nine sites carry the same defect and none is safe to
+leave out of a fix, verified line-by-line against the current file:
 
-Both predate this branch; neither was touched by it. The consequence: a
-managed repo path containing `[`, `*` or `?` can make either check consult the
-wrong file — the staged-content guard can compare against a different path's
-index entry instead of the real one, and the untracked-path detection can
-decide a path's tracked status from a decoy instead of the path itself, which
-would misdirect `unstage_captures` on an aborted run.
+- `git -C "$flake" diff --cached --quiet -- "$repo_rel"` (:281) — the
+  staged-content guard that runs ahead of the unplaced-edit blocker; a decoy
+  match here would compare the wrong path's index entry against HEAD.
+- `git -C "$flake" ls-files --error-unmatch -- "$p"` (:414) — the loop that
+  decides which newly captured paths were untracked before
+  `git add --intent-to-add`, so `unstage_captures`/`on_exit` knows what to
+  reset on a non-commit exit; a decoy match here misreports the real path's
+  tracked status.
+- `git -C "$flake" reset -q -- "''${untracked[@]}"` (:421), in
+  `unstage_captures` — the abort path for the two lines above.
+- `git -C "$flake" add --intent-to-add -- "''${paths[@]}"` (:491) — could stage
+  an intent-to-add entry for the decoy as a side effect of capturing the real
+  path.
+- `git -C "$flake" status --porcelain -- "''${paths[@]}"` (:493) — the
+  "nothing to commit" check; a decoy match could make it see changes that are
+  not the capture's, or hide the capture's own.
+- `git -C "$flake" --no-pager diff HEAD -- "''${paths[@]}"` (:506) and
+  `git -C "$flake" --no-pager diff -- "''${paths[@]}"` (:508) — the preview
+  shown before the confirmation prompt; a decoy match could show the user a
+  diff of a file they never asked nd-save to touch, or hide the real one.
+- `git -C "$flake" add -- "''${paths[@]}"` (:544) — the first commit-leak site
+  above.
+- `git -C "$flake" commit --only -m "$msg" -- "''${paths[@]}"` (:551) — the
+  second, and the one that makes the leak permanent: once committed, the
+  decoy's content is in history under a subject about someone else's config.
+
+All nine predate this branch; none was touched by it.
 
 Fixing it here was considered and rejected. This branch's whole reviewable
 surface is the `captured` kind and two small `nd-switch` defects; widening a
@@ -293,7 +324,10 @@ noticed elsewhere is how a reviewable branch stops being reviewable, and how a
 reviewer's approval of "the captured kind" quietly becomes approval of
 changes to `nd-save`'s capture path that were never in the design doc and
 never asked for. The maintainer can decide whether `nd-save` gets the same
-`--literal-pathspecs` treatment as its own, separately reviewed change.
+`--literal-pathspecs` treatment as its own, separately reviewed change — but
+should treat it as one change covering all nine sites, not just the two a
+first pass happens to notice, since the two that actually write history
+(:544, :551) are not the two most readers would find first.
 
 ## C7 — documentation corrections found during the final review, gathered into one entry
 
@@ -308,10 +342,15 @@ were found during the final whole-branch review and corrected together:
   guard rejects a directory before `cmp` is ever invoked, so the case is
   pinning the guard, not `cmp`'s exit status. The comment was rewritten to say
   that, with a clause noting the `cmp`-exits-2 reasoning is genuine and is
-  exactly what `nd-save`'s unplaced-edit blocker relies on a few hundred lines
-  further down in the same file — which is presumably where the sentence was
-  copied from — so a future reader does not conclude one of the two comments
-  is wrong.
+  exactly the reasoning behind the unplaced-edit blocker in
+  `packages/nd-save.nix` — which is presumably where the sentence was copied
+  from — naming the file rather than a line distance, since the blocker's own
+  tests are in this same file, a few hundred lines **up** from this comment,
+  not down, so a future reader does not conclude one of the two comments is
+  wrong or go looking in the wrong direction. (A re-review after this entry
+  was first written caught that this bullet, and the comment it describes,
+  both originally said "down" — corrected in both places, along with the
+  test comment, at the same time.)
 
 - `README.md`'s "Gate" bullet and `nd-switch --help` both described
   `--allow-dirty` and `--rollback` as the only ways to bypass the drift gate.
@@ -354,3 +393,58 @@ case cannot exist without it — rather than a widening of scope: nothing else
 about the `module` check changed. Verified with `nix flake check`, which
 rebuilt `nd-module-tests` and passed, including the new
 "captured (round trip)" case.
+
+## C9 — a re-review found the captured-glob "no commit was made" guard cannot fail, and its comment named the wrong regression
+
+**Status:** resolved
+
+A re-review of `tests/run.sh`'s captured-glob `nd-save` case (the one
+asserting `check "no commit was made" "captured" ...`, added in the same wave
+as this branch's other `nd-save` captured coverage) found the assertion
+structurally unable to fail, and the comment above it wrong about what it
+catches.
+
+The fixture commits a repo copy that is already byte-identical to what
+`nd-save` would copy. So on either regression the comment named — folding
+`captured` back into `candidates`, or dropping `captured` from `nd-status`
+altogether — `git status --porcelain -- "${paths[@]}"` still reports empty
+before `git commit` is ever reached, or the run exits even earlier still (see
+below), so HEAD does not move on either side of the change. No value this
+fixture can produce distinguishes "regressed" from "not regressed" for this
+one assertion — the same shape C5 and C3 already found elsewhere in this file
+for a `nix build` that cannot succeed against this fixture's `flake.nix`.
+
+The comment's own claim was checked and found wrong, not just unverified. It
+said "no commit was made" was what actually distinguished a fold-in
+regression from correct behaviour, on the theory that the file would be
+copied (a no-op) and committed underneath an otherwise-unchanged report. That
+is not what the code does. This is a glob record — field 1 is the placeholder
+`-` (E7), so it has no file record — and folding `captured` into `candidates`
+sends it to the blocker loop's `*)` arm, whose `src` lookup is keyed on a file
+record (`$4 == ""`). The lookup comes back empty, "cannot tell what was
+placed here" fires, and the run exits 1 before any copy or commit — a failure
+the pre-existing `check_status "a captured glob file is not an error" 0`
+already catches. Dropping `captured` from `nd-status` entirely, the other
+regression the comment claimed to guard, is caught the same pre-existing way:
+the file reads as plain `new` with an existing repo copy, "already in the
+repo, never placed" fires, and both `check_status` and the case's
+`check_not` go red. Neither regression ever reaches a commit for this
+fixture, so "no commit was made" was never the discriminator, on either side
+of the fix.
+
+**Options:** (a) drop the assertion, since it cannot fail and the comment
+claiming it could was simply wrong; (b) keep it and rewrite the comment to say
+truthfully what does and does not depend on it.
+
+**Resolution:** (b). The assertion is not harmful — it is cheap, and it would
+catch an unrelated mistake this case does not currently name: a future
+rewrite of the commit step that runs `git commit` regardless of what
+`git status --porcelain` reported. That is worth one line of insurance even
+though it is not the insurance the original comment advertised. What was not
+acceptable was leaving the false claim in place: a comment asserting a test
+catches a regression it structurally cannot catch is worse than no comment,
+because the next reader trusts it instead of checking. The comment was
+rewritten to name the two regressions this case actually catches (both via
+the pre-existing `check_status`/`check_not` pair, not the new line), state
+plainly that "no commit was made" cannot distinguish either, and say why the
+line is kept anyway.
