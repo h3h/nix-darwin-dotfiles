@@ -204,11 +204,12 @@ asserting only the absence of drift text) was left untouched: it carries no
 drift, so neither label branch is ever reached, and it is unaffected by
 either defect.
 
-## C5 — the end-to-end `check_status 0` after the second `nd-switch` is unreachable, as the brief warned it might be
+## C5 — the end-to-end `check_status 0` after the second `nd-switch` is unreachable
 
 **Status:** resolved
 
-Task 6's brief (Caution 1) flagged that
+Task 6's dispatch instructions — which carried two cautions the extracted
+brief file does not contain — flagged that
 `check_status "the switch is now allowed" 0 "$st"`, in the end-to-end block
 appended to `tests/run.sh`, is very likely structurally unreachable, because
 the fixture's `flake.nix` is the literal text `{}` and a real `nix build`
@@ -232,7 +233,7 @@ against the bare-`{}` fixture, which failed and, under the script's
 the sole failure in an otherwise-279-passing run. This exit 1 is
 indistinguishable from the gate's own `exit 1` on the deadlocked (pre-fix)
 code path: both are 1, so no value of `$st` this fixture can ever produce
-tells the two apart, exactly as the brief predicted.
+tells the two apart, exactly as the dispatch predicted.
 
 The assertion was replaced with the file's established convention (already
 used a few cases above, for "a missing file does not block", and by C3 for
