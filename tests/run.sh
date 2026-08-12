@@ -1204,6 +1204,30 @@ check "an untracked repo copy is still drifted" "drifted	.config/app/config.toml
 check_not "and is not captured" "captured" "$out"
 rm -rf "$d"
 
+# A pathspec is not a path. `git ls-files -- "$repo_rel"` without
+# --literal-pathspecs reads a repo_rel containing [, * or ? as a glob, and it
+# can match a different tracked file at a different path — a tracked decoy
+# named files/c1.toml matched the pathspec files/c[1].toml and made an
+# untracked repo copy of that name report captured. It must stay drifted: the
+# untracked file it actually names would not survive a switch at all.
+d=$(new_fixture)
+printf 'decoy\n' > "$d/repo/files/c1.toml"
+git -C "$d/repo" add files/c1.toml
+git -C "$d/repo" commit -qm "add decoy"
+printf 'meta = 1\n' > "$d/meta-source"
+chmod 0444 "$d/meta-source"
+install -m 0644 "$d/meta-source" "$d/home/.config/app/c[1].toml"
+printf '%s\t%s\t%s\n' "$d/meta-source" ".config/app/c[1].toml" "files/c[1].toml" \
+  >> "$d/home/.local/state/nd/manifest"
+printf 'meta = 2\n' > "$d/home/.config/app/c[1].toml"
+install -m 0644 "$d/home/.config/app/c[1].toml" "$d/repo/files/c[1].toml"
+out=$(run_status "$d")
+check "a repo path with glob metacharacters is not read as a pathspec" \
+  "drifted	.config/app/c[1].toml	files/c[1].toml" "$out"
+check_not "and is not falsely captured via the tracked decoy" \
+  "captured	.config/app/c[1].toml" "$out"
+rm -rf "$d"
+
 d=$(new_fixture)
 drift "$d"
 out=$(run_status "$d")

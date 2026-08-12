@@ -253,3 +253,44 @@ else reads it.
 Re-run after the change: 279 passed, 0 failed — the full suite, including
 this block and the floor of 269 pre-existing checks. `nix flake check` also
 passed.
+
+## C6 — the analogous pathspec-not-a-path defect in `nd-save` is left alone
+
+**Status:** deferred to the maintainer
+
+The final whole-branch review (2026-08-11) found that `nd-status`'s
+`kind_for` passed `$repo_rel` to `git ls-files --error-unmatch -- "$repo_rel"`
+as a pathspec rather than a literal path: a repo path containing `[`, `*` or
+`?` is read as a glob, and can match a *different* tracked file at a
+different location. A tracked decoy at `files/c1.toml` made `git ls-files --
+'files/c[1].toml'` exit 0 and report an untracked repo copy of that name as
+`captured`, which is exactly the miscall the design's tracked-only rule
+exists to rule out: an untracked file is invisible to a flake build, so the
+user would lose it on the next switch. This was fixed in `nd-status.nix` with
+`git --literal-pathspecs`, and pinned with a new `tests/run.sh` case (a
+tracked decoy plus an untracked repo copy named with glob metacharacters,
+asserting `drifted`, not `captured`).
+
+The same defect exists, unfixed, in two places in `packages/nd-save.nix`:
+
+- `git -C "$flake" diff --cached --quiet -- "$repo_rel"`, in the staged-content
+  guard that runs ahead of the unplaced-edit blocker;
+- `git -C "$flake" ls-files --error-unmatch -- "$p"`, in the loop that decides
+  which newly captured paths were untracked before `git add --intent-to-add`,
+  so `unstage_captures`/`on_exit` knows what to reset on a non-commit exit.
+
+Both predate this branch; neither was touched by it. The consequence: a
+managed repo path containing `[`, `*` or `?` can make either check consult the
+wrong file — the staged-content guard can compare against a different path's
+index entry instead of the real one, and the untracked-path detection can
+decide a path's tracked status from a decoy instead of the path itself, which
+would misdirect `unstage_captures` on an aborted run.
+
+Fixing it here was considered and rejected. This branch's whole reviewable
+surface is the `captured` kind and two small `nd-switch` defects; widening a
+targeted fix into untouched, unrelated code the moment the same bug shape is
+noticed elsewhere is how a reviewable branch stops being reviewable, and how a
+reviewer's approval of "the captured kind" quietly becomes approval of
+changes to `nd-save`'s capture path that were never in the design doc and
+never asked for. The maintainer can decide whether `nd-save` gets the same
+`--literal-pathspecs` treatment as its own, separately reviewed change.

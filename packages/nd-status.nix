@@ -120,7 +120,13 @@ writeShellApplication {
         return 0
       fi
 
-      if ! git -C "$flake" ls-files --error-unmatch -- "$repo_rel" > /dev/null 2>&1; then
+      # --literal-pathspecs, not a bare "--". A pathspec is not a path: without
+      # it, a repo_rel containing [, * or ? is read as a glob and can match a
+      # different tracked file at a different location. An untracked repo copy
+      # named files/c[1].toml was reported captured this way, because
+      # files/c1.toml happened to be tracked and the pathspec matched that
+      # instead of asking whether files/c[1].toml itself was known to git.
+      if ! git --literal-pathspecs -C "$flake" ls-files --error-unmatch -- "$repo_rel" > /dev/null 2>&1; then
         printf '%s' "$fallback"
         return 0
       fi
