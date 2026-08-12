@@ -54,7 +54,10 @@ Copy, don't symlink. Then make the drift visible and easy to capture.
    which rewrites the manifest.
    `--allow-dirty` and `--rollback` both bypass the gate, and both name every
    drifted file and say its contents will be discarded before anything is built
-   and before sudo is asked for anything.
+   and before sudo is asked for anything. `--build` bypasses it too, but for a
+   different reason than the other two: it places nothing, so there is nothing
+   for it to discard, and it names what it found rather than warning about an
+   overwrite that cannot happen.
 4. **Capture.** `nd-save` copies drifted and new files back into the repo and
    commits them.
 

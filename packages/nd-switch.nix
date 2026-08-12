@@ -65,7 +65,8 @@ writeShellApplication {
           ;;
         -h | --help)
           echo "usage: nd-switch [--build] [--allow-dirty] [--rollback [N]] [-- ARGS...]"
-          echo "  --build         build only, no sudo, no switch"
+          echo "  --build         build only, no sudo, no switch; reports drift instead of"
+          echo "                  refusing it"
           echo "  --allow-dirty   switch anyway, discarding the contents of drifted"
           echo "                  files; they are named before anything is built"
           echo "  --rollback [N]  go back N generations (default 1)"

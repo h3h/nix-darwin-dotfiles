@@ -294,3 +294,42 @@ reviewer's approval of "the captured kind" quietly becomes approval of
 changes to `nd-save`'s capture path that were never in the design doc and
 never asked for. The maintainer can decide whether `nd-save` gets the same
 `--literal-pathspecs` treatment as its own, separately reviewed change.
+
+## C7 — documentation corrections found during the final review, gathered into one entry
+
+**Status:** resolved
+
+Three inaccuracies in comments and documentation, none of them behavioural,
+were found during the final whole-branch review and corrected together:
+
+- `tests/run.sh`'s comment on the "directory in the repo's place" nd-status
+  case said `cmp` exits 2 for a directory, "which is 'I could not read one of
+  them', not 'they match'". `kind_for`'s own `[ ! -f "$flake/$repo_rel" ]`
+  guard rejects a directory before `cmp` is ever invoked, so the case is
+  pinning the guard, not `cmp`'s exit status. The comment was rewritten to say
+  that, with a clause noting the `cmp`-exits-2 reasoning is genuine and is
+  exactly what `nd-save`'s unplaced-edit blocker relies on a few hundred lines
+  further down in the same file — which is presumably where the sentence was
+  copied from — so a future reader does not conclude one of the two comments
+  is wrong.
+
+- `README.md`'s "Gate" bullet and `nd-switch --help` both described
+  `--allow-dirty` and `--rollback` as the only ways to bypass the drift gate.
+  This branch made `--build` a third: `report_status` is now called for it and
+  its return value ignored. Both were updated to name `--build` and explain
+  why it differs from the other two — it places nothing, so it has nothing to
+  discard, and it reports what it found rather than warning about an
+  overwrite that cannot happen.
+
+- `modules/home-manager.nix`'s `enableZshIntegration` description said the
+  notice counts "drifted, missing and newly appeared files". The notice has
+  counted five kinds plus an `unrecognised` catch-all since `unreadable` was
+  added, and `captured` made it six kinds plus the catch-all; the description
+  was updated to name them. `unreadable` was already missing from this
+  description before this branch — that omission predates the `captured`
+  work and is folded into this same correction rather than opened as its own
+  entry, since it is the same class of drift between the option's prose and
+  what the notice actually does.
+
+No behaviour changed for any of the three; all are comment or documentation
+text.

@@ -1303,8 +1303,14 @@ out=$(HOME="$d/home" ND_FLAKE="$d/nowhere" "$ND_STATUS" 2>&1)
 check "an absent flake is still drifted" "drifted	.config/app/config.toml" "$out"
 rm -rf "$d"
 
-# A directory where the repo copy should be. cmp exits 2 rather than 1, which
-# is "I could not read one of them", not "they match".
+# A directory where the repo copy should be. kind_for's own `[ ! -f
+# "$flake/$repo_rel" ]` guard rejects it — a directory is not a regular file —
+# before cmp is ever run, so this pins the guard rather than cmp's exit status;
+# it would catch a regression if the guard were removed and cmp were left to
+# meet the directory on its own. (cmp exiting 2 for "could not read one of
+# them" rather than 1 for "they differ" is real, and is exactly the reasoning
+# behind nd-save's unplaced-edit blocker a few hundred lines down — this case
+# just does not reach it.)
 d=$(new_fixture)
 drift "$d"
 rm "$d/repo/files/config.toml"
