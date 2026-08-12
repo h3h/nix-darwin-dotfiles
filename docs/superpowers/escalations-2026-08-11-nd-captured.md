@@ -333,3 +333,24 @@ were found during the final whole-branch review and corrected together:
 
 No behaviour changed for any of the three; all are comment or documentation
 text.
+
+## C8 — the `module` flake check did not already have `pkgs.git`
+
+**Status:** resolved
+
+The final-review brief for adding a `captured` case to `tests/module.sh`'s
+round trip stated `pkgs.git` was already in the check's `nativeBuildInputs`.
+Reading `flake.nix` before writing the case showed that is true of the
+`tests` check (`checks.<system>.tests`, which runs `tests/run.sh`) but not of
+the `module` check (`checks.<system>.module`, which runs `tests/module.sh`
+and is what the brief's own instructions name): its `pkgs.runCommand
+"nd-module-tests" { } ''...''` passed an empty attrset, with no
+`nativeBuildInputs` at all.
+
+The new case needs a real repository, so `git` was added to that
+derivation's `nativeBuildInputs` in `flake.nix` as part of the same change.
+This is the minimum needed to make the brief's own request buildable — the
+case cannot exist without it — rather than a widening of scope: nothing else
+about the `module` check changed. Verified with `nix flake check`, which
+rebuilt `nd-module-tests` and passed, including the new
+"captured (round trip)" case.

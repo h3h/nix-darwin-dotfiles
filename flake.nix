@@ -75,7 +75,7 @@
                 inherit pkgs self;
               };
             in
-            pkgs.runCommand "nd-module-tests" { } ''
+            pkgs.runCommand "nd-module-tests" { nativeBuildInputs = [ pkgs.git ]; } ''
               export ND_ACTIVATION="${m.activation}"
               export ND_ACTIVATION_SPARSE="${m.activationSparse}"
               export ND_ACTIVATION_AFTER="${m.activationAfter}"
