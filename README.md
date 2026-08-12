@@ -39,15 +39,19 @@ Copy, don't symlink. Then make the drift visible and easy to capture.
    record, so files the application creates later can be recognised.
 2. **Detection.** `nd-status` reads the manifest and classifies every managed
    path as `drifted` (differs from the store source it was placed from),
-   `missing` (deleted), `new` (a file under a glob root that matches a pattern
-   and has no record yet) or `unreadable` (the store source cannot be opened, so
-   drift cannot be decided either way). Drift is a content comparison against
-   *what was actually installed*, which is what makes the next point work.
+   `captured` (differs from the store source, or was never placed, but the repo
+   already holds that exact content where git can see it), `missing` (deleted),
+   `new` (a file under a glob root that matches a pattern and has no record yet)
+   or `unreadable` (the store source cannot be opened, so drift cannot be
+   decided either way). Drift is a content comparison against *what was actually
+   installed*, which is what makes the next point work.
 3. **Gate.** `nd-switch` refuses to switch while any managed file has drifted,
-   because switching would copy over it. `missing`, `new` and `unreadable` are
-   reported but do not block: a missing file will be restored by the switch, a
-   new file has no store source to be overwritten by, and an unreadable source
-   is repaired by the switch, which rewrites the manifest.
+   because switching would copy over it. `captured`, `missing`, `new` and
+   `unreadable` are reported but do not block: a captured file is rebuilt from
+   the repo copy that already matches it, so the overwrite discards nothing; a
+   missing file will be restored by the switch; a new file has no store source
+   to be overwritten by; and an unreadable source is repaired by the switch,
+   which rewrites the manifest.
    `--allow-dirty` and `--rollback` both bypass the gate, and both name every
    drifted file and say its contents will be discarded before anything is built
    and before sudo is asked for anything.
@@ -65,6 +69,23 @@ situations:
 Both look like "these differ". Comparing against the store path *the current
 generation installed* separates them exactly: that is the last known-placed
 content, so a difference means something rewrote it afterwards.
+
+There are three states, not two, and the third is why `captured` exists:
+
+| live vs placed | live vs repo | meaning | what happens |
+| --- | --- | --- | --- |
+| same | same | nothing happened | switch |
+| differs | differs | the app rewrote it, not yet captured | refuse — this is what the gate is for |
+| differs | same | the app rewrote it, `nd-save` already captured it | switch; the new generation builds this file *from* the repo copy, so the overwrite discards nothing |
+
+Before the third row was distinguished, it was classified as drift and refused,
+and the refusal was self-perpetuating: only an activation rewrites the manifest,
+and `nd-switch` was the thing declining to activate. `nd-save` could not break it
+either, because the state it would have had to change is the manifest, which
+activation owns. `nd-status` decides the third row by asking whether the repo
+copy is byte-identical to the live file *and* visible to git — an untracked file
+is invisible to a flake build, so a byte-identical untracked copy would not
+survive the switch. Anything it cannot decide stays `drifted`.
 
 ## Install
 
@@ -148,7 +169,7 @@ $ nd-save -m "Update Zed"   # with a commit message
 $ nd-save -y                # skip the confirmation
 $ nd-save --force           # overwrite repo edits that were never placed
 $ nd-save --branch main     # require a branch for this run
-$ nd-status                 # what drifted, went missing, appeared or cannot be read
+$ nd-status                 # what drifted, was captured, went missing, appeared or cannot be read
 ```
 
 `nd-status` prints one line per finding, `<kind>` TAB `<path under $HOME>` TAB

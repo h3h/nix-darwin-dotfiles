@@ -203,3 +203,52 @@ The sibling case just above it (clean fixture, `run_switch "$d" --build`,
 asserting only the absence of drift text) was left untouched: it carries no
 drift, so neither label branch is ever reached, and it is unaffected by
 either defect.
+
+## C5 — the end-to-end `check_status 0` after the second `nd-switch` is unreachable, as the brief warned it might be
+
+**Status:** resolved
+
+Task 6's brief (Caution 1) flagged that
+`check_status "the switch is now allowed" 0 "$st"`, in the end-to-end block
+appended to `tests/run.sh`, is very likely structurally unreachable, because
+the fixture's `flake.nix` is the literal text `{}` and a real `nix build`
+against it always fails under `errexit` — the same fact C3 already
+established for a different case. It asked that this be verified empirically
+rather than assumed, and if unreachable, that the assertion be replaced with
+one that discriminates the fixed behaviour from the deadlocked one by
+checking that the `building` line was reached, since a gate refusal exits
+before that line ever prints.
+
+Verified empirically: with the assertion in place exactly as the brief wrote
+it, the built `nd-switch` was run against the case's fixture (drift, then
+`nd-save -y` to capture it, then a second `run_switch` with no flags). The
+second `nd-switch` correctly did not refuse — `report_status ""` returned 0,
+because the file classifies as `captured` rather than `drifted` once the
+repo copy matches and is tracked — reached `echo "nd-switch: building ..."`,
+then ran `nix build --no-link "$flake#darwinConfigurations.$host.system"`
+against the bare-`{}` fixture, which failed and, under the script's
+`set -euo pipefail`, made the whole invocation exit 1. `check_status
+"the switch is now allowed" 0 "$st"` failed with "wanted exit 0, got 1" —
+the sole failure in an otherwise-279-passing run. This exit 1 is
+indistinguishable from the gate's own `exit 1` on the deadlocked (pre-fix)
+code path: both are 1, so no value of `$st` this fixture can ever produce
+tells the two apart, exactly as the brief predicted.
+
+The assertion was replaced with the file's established convention (already
+used a few cases above, for "a missing file does not block", and by C3 for
+the `--build`/`--allow-dirty` regression assertions): drop `check_status`
+entirely, keep capturing `$out` from `run_switch "$d"`, and rely on
+`check "and reaches the build" "building" "$out"` — already present
+immediately below in the brief's own text — to discriminate the two
+behaviours. Reaching the `building` echo requires `report_status ""` to have
+returned 0, which requires the file to have classified as `captured` rather
+than `drifted`; the deadlocked code path never gets there, because it
+returns 1 and `exit 1`s before that echo runs. A comment was added at the
+call site pointing at this entry and at C3, so a future reader does not
+re-diagnose the same unreachability. No other line in the block changed:
+`st=$?` was dropped along with the assertion that consumed it, since nothing
+else reads it.
+
+Re-run after the change: 279 passed, 0 failed — the full suite, including
+this block and the floor of 269 pre-existing checks. `nix flake check` also
+passed.

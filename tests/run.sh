@@ -1402,6 +1402,47 @@ out=$(run_save "$d" -y)
 check "the loop is closed" "nothing to save" "$out"
 rm -rf "$d"
 
+# The deadlock from issue #1, start to finish. On v0.2.0 the second nd-switch
+# refuses and the second nd-save refuses, each naming the other, and no
+# sequence of the two clears it.
+d=$(new_fixture)
+drift "$d"
+
+out=$(run_switch "$d"); st=$?
+check_status "uncaptured drift refuses the switch" 1 "$st"
+check "and says to run nd-save" "run 'nd-save'" "$out"
+
+out=$(run_save "$d" -y)
+check "nd-save captures it" "copied back into the repo" "$out"
+check "nd-save commits it" "committed" "$out"
+check "the repo holds the live content" "setting = 2" "$(cat "$d/repo/files/config.toml")"
+
+# check_status against 0 is not reachable here: the fixture's flake.nix is a
+# bare "{}", so the real `nix build` this reaches always fails under errexit,
+# and that failure's exit 1 is indistinguishable from a gate refusal's exit 1
+# (see the "a missing file does not block" case above, and C3 in
+# docs/superpowers/escalations-2026-08-11-nd-captured.md). What discriminates
+# the fix from the deadlock is whether the build step was reached at all: a
+# refusal exits before ever printing "building".
+out=$(run_switch "$d")
+check "and says why it is safe" "nothing is lost" "$out"
+check "and reaches the build" "building" "$out"
+
+# nd-save agrees there is nothing left for it, and sends the user to the switch
+# rather than refusing.
+out=$(run_save "$d" -y); st=$?
+check_status "nd-save is not an error either" 0 "$st"
+check "nd-save sends the user to nd-switch" "run 'nd-switch' to place them" "$out"
+
+# And the loop closes: place it, and everything matches again.
+install -m 0644 "$d/repo/files/config.toml" "$d/store-source-2"
+chmod 0444 "$d/store-source-2"
+printf '%s\t%s\t%s\n' "$d/store-source-2" ".config/app/config.toml" "files/config.toml" \
+  > "$d/home/.local/state/nd/manifest"
+out=$(run_status "$d")
+check_empty "after the switch nothing is reported at all" "$out"
+rm -rf "$d"
+
 echo
 echo "passed $pass, failed $fail"
 [ "$fail" -eq 0 ]
