@@ -448,3 +448,79 @@ rewritten to name the two regressions this case actually catches (both via
 the pre-existing `check_status`/`check_not` pair, not the new line), state
 plainly that "no commit was made" cannot distinguish either, and say why the
 line is kept anyway.
+
+---
+
+## Closing state
+
+8 of 9 entries are resolved. **One is deliberately left open for the
+maintainer**, because deciding it means deciding to widen this branch's
+reviewable surface into code the design never named, not something an
+implementer should settle unilaterally:
+
+- **C6 — should `packages/nd-save.nix` get the same `--literal-pathspecs`
+  treatment `nd-status.nix` got, and if so, when?** `nd-status`'s `kind_for`
+  had the same defect and was fixed in this branch, because the design's
+  `captured` classification runs through it directly. `nd-save` was not
+  touched, on the reasoning that this branch's approved surface is the
+  `captured` kind and two named `nd-switch` defects, and fixing an unrelated
+  bug shape the moment it is noticed elsewhere is how a reviewable branch
+  stops being reviewable.
+
+  The argument for leaving it to a separate, dedicated change is exactly that
+  scoping argument: a reviewer who approved "the `captured` kind" did not
+  thereby approve changes to `nd-save`'s capture path, and folding it in here
+  means either a bigger diff than the design doc describes or a fix that
+  arrives without its own review. The argument for fixing it now is severity:
+  this is not the same shape of bug as the `nd-status` misclassification,
+  which costs a wrong report. Two of the nine sites can stage and commit an
+  *unrelated* tracked file into a commit whose message is about someone
+  else's application config, in a repo the design already assumes may be
+  shared. A maintainer may reasonably decide that severity overrides scope
+  discipline for this one fix even though it didn't for everything else this
+  review found.
+
+  **Current behaviour:** all nine sites in `packages/nd-save.nix` pass a
+  repo-relative path to git as a pathspec, not a literal path, exactly as
+  `nd-status`'s `kind_for` did before this branch fixed it there:
+
+  - `git -C "$flake" diff --cached --quiet -- "$repo_rel"` (:281)
+  - `git -C "$flake" ls-files --error-unmatch -- "$p"` (:414)
+  - `git -C "$flake" reset -q -- "${untracked[@]}"` (:421)
+  - `git -C "$flake" add --intent-to-add -- "${paths[@]}"` (:491)
+  - `git -C "$flake" status --porcelain -- "${paths[@]}"` (:493)
+  - `git -C "$flake" --no-pager diff HEAD -- "${paths[@]}"` (:506)
+  - `git -C "$flake" --no-pager diff -- "${paths[@]}"` (:508)
+  - `git -C "$flake" add -- "${paths[@]}"` (:544)
+  - `git -C "$flake" commit --only -m "$msg" -- "${paths[@]}"` (:551)
+
+  A managed repo path containing `[`, `*` or `?`, alongside an unrelated
+  tracked file the user has modified that happens to glob-match it, makes
+  the last two of these (:544, :551) stage and commit the unrelated file too
+  — verified against real git, not assumed. The other seven can misdirect a
+  comparison, a reset, or the diff preview shown before the confirmation
+  prompt, which is a smaller failure with the same root cause.
+
+  **Tests that pin it:** none, on either side of the question. Unlike
+  `nd-status`, which has "a repo path with glob metacharacters is not read as
+  a pathspec" and "and is not falsely captured via the tracked decoy" in
+  `tests/run.sh` pinning the fixed behaviour, `nd-save` has no test — buggy
+  or fixed — that exercises a managed path containing glob metacharacters
+  against an unrelated tracked decoy. Changing the answer here means writing
+  that coverage from nothing, alongside whichever fix `packages/nd-save.nix`
+  gets: a decoy fixture analogous to `nd-status`'s, run through `nd-save`,
+  asserting the decoy is untouched by `git add`/`git commit --only` after a
+  capture of the glob-named path.
+
+**Final verification**, run after all five fixes above and this closing
+section landed: the suite (built via `nix build --no-link --print-out-paths
+.#nd-switch .#nd-save .#nd-status`, then `bash tests/run.sh` against the
+three resulting binaries) reported
+
+```
+passed 302, failed 0
+```
+
+— 298 pre-existing plus the four new checks from the added
+`--allow-dirty` + captured case. `nix flake check` passed: `tests`,
+`module`, `glob` and `glob-engines` all built clean.
