@@ -1450,6 +1450,56 @@ check "captured is counted too" "1 captured" "$out"
 check "the advice stays nd-save while drift remains" "nd-save" "$out"
 rm -rf "$d"
 
+# Captured and missing together. The design calls this out by name: a switch
+# is what restores a missing file too, so `missing` must not divert the advice
+# away from nd-switch the way `drifted`, `new`, `unreadable` and `unrecognised`
+# do. Someone adding `missing` to that condition would break this silently,
+# because every other case in this file exercises `missing` alone, where it
+# reads the same either way.
+d=$(new_fixture)
+printf 'other = 1\n' > "$d/other-source"
+chmod 0444 "$d/other-source"
+install -m 0644 "$d/other-source" "$d/home/.config/app/other.toml"
+install -m 0644 "$d/other-source" "$d/repo/files/other.toml"
+printf '%s\t%s\t%s\n' "$d/other-source" ".config/app/other.toml" "files/other.toml" \
+  >> "$d/home/.local/state/nd/manifest"
+git -C "$d/repo" add -A
+git -C "$d/repo" commit -qm "add other"
+drift "$d"
+install -m 0644 "$d/home/.config/app/config.toml" "$d/repo/files/config.toml"
+git -C "$d/repo" add -A
+git -C "$d/repo" commit -qm captured
+rm "$d/home/.config/app/other.toml"
+out=$(run_notice "$d")
+check "captured and missing are both counted" "1 captured" "$out"
+check "missing is counted too" "1 missing" "$out"
+check "captured plus missing still advises nd-switch" "nd-switch" "$out"
+check_not "and does not fall back to nd-save" "nd-save" "$out"
+rm -rf "$d"
+
+# Captured and unreadable together. nd-save is where `unreadable` is explained
+# at length, so it must keep the nd-save advice even though nothing is drifted
+# or new — the opposite of the missing case just above.
+d=$(new_fixture)
+printf 'other = 1\n' > "$d/other-source"
+chmod 0444 "$d/other-source"
+install -m 0644 "$d/other-source" "$d/home/.config/app/other.toml"
+install -m 0644 "$d/other-source" "$d/repo/files/other.toml"
+printf '%s\t%s\t%s\n' "$d/other-source" ".config/app/other.toml" "files/other.toml" \
+  >> "$d/home/.local/state/nd/manifest"
+git -C "$d/repo" add -A
+git -C "$d/repo" commit -qm "add other"
+drift "$d"
+install -m 0644 "$d/home/.config/app/config.toml" "$d/repo/files/config.toml"
+git -C "$d/repo" add -A
+git -C "$d/repo" commit -qm captured
+rm -f "$d/other-source"
+out=$(run_notice "$d")
+check "captured and unreadable are both counted" "1 captured" "$out"
+check "unreadable is counted too" "1 unreadable" "$out"
+check "captured plus unreadable keeps the nd-save advice" "nd-save" "$out"
+rm -rf "$d"
+
 echo
 echo "end to end"
 
