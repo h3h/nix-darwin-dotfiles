@@ -155,13 +155,14 @@ writeShellApplication {
     # silently filed under it.
     missing="$(printf '%s\n' "$status" | grep "^missing$tab" | cut -f2 || true)"
     unreadable="$(printf '%s\n' "$status" | grep "^unreadable$tab" | cut -f2 || true)"
+    captured="$(printf '%s\n' "$status" | grep "^captured$tab" | cut -f2 || true)"
     candidates="$(printf '%s\n' "$status" | grep -E "^(drifted|new)$tab" || true)"
     # Anything else is a kind this nd-save predates. Naming it beats dropping
     # it, which is exactly how `unreadable` disappeared into "nothing to save"
     # when nd-status grew it. nd-switch reports unknown kinds for the same
     # reason; this is the same catch-all on the save side.
     unknown="$(printf '%s\n' "$status" | grep -v '^$' \
-      | grep -vE "^(drifted|missing|new|unreadable)$tab" || true)"
+      | grep -vE "^(drifted|missing|new|unreadable|captured)$tab" || true)"
 
     if [ -n "$missing" ]; then
       echo "nd-save: these managed files are gone; there is nothing to save for them:"
@@ -191,8 +192,19 @@ writeShellApplication {
       echo
     fi
 
+    # Already in the repo, so there is nothing for nd-save to copy — and saying
+    # only "nothing to save" here is what made the deadlock unreadable: it is
+    # true that nd-save has no work, and false that nothing needs doing. The
+    # action is a switch, and nd-switch will now perform it.
+    if [ -n "$captured" ]; then
+      echo "nd-save: these are already in the repo; there is nothing to copy:"
+      printf '%s\n' "$captured" | sed 's/^/  /'
+      echo "nd-save: run 'nd-switch' to place them."
+      echo
+    fi
+
     if [ -z "$candidates" ]; then
-      if [ -n "$unreadable" ] || [ -n "$unknown" ]; then
+      if [ -n "$unreadable" ] || [ -n "$unknown" ] || [ -n "$captured" ]; then
         echo "nd-save: nothing to save; every file that could be classified still matches"
       else
         echo "nd-save: nothing to save, every placed file still matches"

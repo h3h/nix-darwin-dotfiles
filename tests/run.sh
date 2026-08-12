@@ -949,6 +949,52 @@ check_status "an uncomparable repo copy exits 1" 1 "$st"
 check "an uncomparable repo copy stops the copy" "initial" "$(git -C "$d/repo" log -1 --format=%s)"
 rm -rf "$d"
 
+# The other half of the deadlock. nd-save had already captured this content, so
+# there is nothing left to copy — but its unplaced-edit guard compared the repo
+# copy against the store source, found them different, and refused with "the
+# repo carries edits that were never placed", pointing at the switch that
+# nd-switch was simultaneously refusing to perform.
+d=$(new_fixture)
+drift "$d"
+install -m 0644 "$d/home/.config/app/config.toml" "$d/repo/files/config.toml"
+git -C "$d/repo" add -A
+git -C "$d/repo" commit -qm captured
+out=$(run_save "$d" -y); st=$?
+check_status "a captured file is not an error" 0 "$st"
+check "a captured file is named" "already in the repo" "$out"
+check "and the file is named" ".config/app/config.toml" "$out"
+check "and the user is sent to nd-switch" "run 'nd-switch' to place them" "$out"
+check_not "it is not refused as an unplaced edit" "never placed" "$out"
+check_not "and it does not claim everything still matches" "every placed file still matches" "$out"
+check "no commit was made" "captured" "$(git -C "$d/repo" log -1 --format=%s)"
+rm -rf "$d"
+
+# A repo copy that differs from what was placed and was never placed is still
+# refused. That is what the E14 guard is for, and the reclassification must not
+# reach it.
+d=$(new_fixture)
+drift "$d"
+printf 'my unplaced edit\n' > "$d/repo/files/config.toml"
+out=$(run_save "$d" -y); st=$?
+check_status "an unplaced repo edit is still refused" 1 "$st"
+check "the refusal still names it" "never placed" "$out"
+check "the repo edit survives" "my unplaced edit" "$(cat "$d/repo/files/config.toml")"
+rm -rf "$d"
+
+# A captured glob file. Not a deadlock — nd-switch never gated on new — but
+# nd-save refused with "already in the repo, never placed" about a file nd-save
+# itself put there one run earlier.
+d=$(new_glob_fixture)
+printf '{"pinned":"abc"}\n' > "$d/home/.config/nv/lazy-lock.json"
+install -m 0644 "$d/home/.config/nv/lazy-lock.json" "$d/repo/files/nv/lazy-lock.json"
+git -C "$d/repo" add -A
+git -C "$d/repo" commit -qm captured
+out=$(run_save "$d" -y); st=$?
+check_status "a captured glob file is not an error" 0 "$st"
+check "a captured glob file is named" "already in the repo" "$out"
+check_not "and is not refused as never placed" "never placed" "$out"
+rm -rf "$d"
+
 echo "nd-status"
 
 d=$(new_fixture)
