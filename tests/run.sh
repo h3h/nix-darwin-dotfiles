@@ -284,17 +284,60 @@ rm -rf "$d"
 # Captured content does not block. The new generation builds this file from the
 # repo copy, which is byte-identical to what is live, so the overwrite has
 # nothing to discard. Refusing here is the deadlock the issue is about.
+#
+# This is a plain switch, not --build: --build's captured wording is its own
+# case below now that it is label-aware, and "nothing is lost" is only true of
+# a run that actually switches. The fixture's flake.nix is the usual bare "{}",
+# so this still fails at the `nix build` step under errexit — the assertions
+# are all on what prints before that, same as every other case that reaches
+# "building" in this file.
+d=$(new_fixture)
+drift "$d"
+install -m 0644 "$d/home/.config/app/config.toml" "$d/repo/files/config.toml"
+git -C "$d/repo" add -A
+git -C "$d/repo" commit -qm captured
+out=$(run_switch "$d")
+check "captured content is named" "the repo already holds the change" "$out"
+check "captured content names the file" ".config/app/config.toml" "$out"
+check "captured content says nothing is lost" "nothing is lost" "$out"
+check "captured content does not block" "building" "$out"
+check_not "and is not called drift" "switching would overwrite them" "$out"
+rm -rf "$d"
+
+# --build's captured wording is its own case: it places nothing, so "nothing is
+# lost" (which claims a re-place happened) is exactly the false-under---build
+# sentence the drifted block already learned not to print, and captured needs
+# the same fix.
 d=$(new_fixture)
 drift "$d"
 install -m 0644 "$d/home/.config/app/config.toml" "$d/repo/files/config.toml"
 git -C "$d/repo" add -A
 git -C "$d/repo" commit -qm captured
 out=$(run_switch "$d" --build)
-check "captured content is named" "the repo already holds the change" "$out"
-check "captured content names the file" ".config/app/config.toml" "$out"
-check "captured content says nothing is lost" "nothing is lost" "$out"
-check "captured content does not block" "building" "$out"
-check_not "and is not called drift" "switching would overwrite them" "$out"
+check "--build captured content is named" "the repo already holds the change" "$out"
+check "--build captured says nothing is being placed" "nothing is being placed, so they are left alone" "$out"
+check_not "--build captured does not say nothing is lost" "nothing is lost" "$out"
+check "--build captured still reaches the build step" "building" "$out"
+rm -rf "$d"
+
+# --rollback's captured wording is also its own case: a rollback places the
+# PREVIOUS generation's store content, not the repo working tree, so "nothing
+# is lost" is false there too — the file the repo captured is about to be
+# reverted, not re-placed. This is the gap C-numbered escalations warned about:
+# there was no --rollback case anywhere in the suite with a captured file in
+# it. The rollback itself still has to proceed; captured never gates.
+d=$(new_fixture)
+drift "$d"
+install -m 0644 "$d/home/.config/app/config.toml" "$d/repo/files/config.toml"
+git -C "$d/repo" add -A
+git -C "$d/repo" commit -qm captured
+out=$(run_rollback "$d" --rollback)
+check "--rollback captured content is named" "the repo already holds the change" "$out"
+check "--rollback captured says the file will be reverted" \
+  "a rollback places the older generation's copy instead" "$out"
+check_not "--rollback captured does not say nothing is lost" "nothing is lost" "$out"
+check "--rollback still proceeds with a captured file present" \
+  "darwin-rebuild switch --rollback" "$out"
 rm -rf "$d"
 
 # The guard still fires on genuine, uncaptured drift. This is the property the

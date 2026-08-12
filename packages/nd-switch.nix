@@ -159,7 +159,28 @@ writeShellApplication {
       if [ -n "$captured" ]; then
         echo "nd-switch: these changed since they were placed, and the repo already holds the change:" >&2
         printf '%s\n' "$captured" | sed 's/^/  /' >&2
-        echo "nd-switch: switching re-places them from the repo; nothing is lost." >&2
+
+        # The first line and the file list are true for every label; only the
+        # closing sentence has to vary, because this block used to print one
+        # sentence written for a plain switch and hand it to every label
+        # unexamined. A rollback places the PREVIOUS generation's store content,
+        # not the repo working tree — it does not build from the repo at all —
+        # so "switching re-places them from the repo" is false there, and it
+        # will revert a file this block just called safe. --build places
+        # nothing, so the same sentence is false for the opposite reason. Only
+        # an ordinary switch, with or without --allow-dirty riding along, is
+        # actually about to re-place anything from the repo.
+        case "$label" in
+          --build)
+            echo "nd-switch: nothing is being placed, so they are left alone." >&2
+            ;;
+          --rollback)
+            echo "nd-switch: the repo holds this content, but a rollback places the older generation's copy instead — these files will be reverted." >&2
+            ;;
+          *)
+            echo "nd-switch: switching re-places them from the repo; nothing is lost." >&2
+            ;;
+        esac
       fi
 
       if [ -n "$drifted" ]; then
