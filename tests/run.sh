@@ -340,6 +340,24 @@ check "--rollback still proceeds with a captured file present" \
   "darwin-rebuild switch --rollback" "$out"
 rm -rf "$d"
 
+# --allow-dirty's captured wording is the plain-switch wording, not its own
+# case: --allow-dirty only changes whether *uncaptured* drift blocks, it does
+# not change what a switch places, so the `*)` arm of the captured report
+# (shared by the empty label and --allow-dirty) applies unchanged. Until now
+# that arm was reached only through the empty label — this is the missing
+# --allow-dirty case.
+d=$(new_fixture)
+drift "$d"
+install -m 0644 "$d/home/.config/app/config.toml" "$d/repo/files/config.toml"
+git -C "$d/repo" add -A
+git -C "$d/repo" commit -qm captured
+out=$(run_switch "$d" --allow-dirty)
+check "--allow-dirty captured content is named" "the repo already holds the change" "$out"
+check "--allow-dirty captured says nothing is lost" "nothing is lost" "$out"
+check_not "--allow-dirty captured is not called an overwrite" "will be OVERWRITTEN" "$out"
+check "--allow-dirty captured still reaches the build step" "building" "$out"
+rm -rf "$d"
+
 # The guard still fires on genuine, uncaptured drift. This is the property the
 # fix must not cost, and it is worth more than any of the assertions above.
 d=$(new_fixture)
@@ -1029,12 +1047,24 @@ rm -rf "$d"
 # itself put there one run earlier.
 #
 # The three assertions this case originally had — exit 0, "already in the
-# repo", and the absence of "never placed" — all still pass if a future change
-# moves `captured` back into `candidates`: the captured report block prints
-# regardless, and the file would simply be copied (a no-op, since the content
-# already matches) and committed underneath the unchanged report. "no commit
-# was made" is the assertion that actually distinguishes a report from a copy,
-# matching the one a few blocks above for the file-record case.
+# repo", and the absence of "never placed" — already catch the regression this
+# case exists for. Fold `captured` back into `candidates` and this glob record
+# (whose field 1 is the placeholder "-" from E7 — it has no file record) falls
+# to the blocker loop's `*)` arm, whose `src` lookup is keyed on a file record
+# ($4 == ""); the lookup comes back empty, "cannot tell what was placed here"
+# fires, and the run exits 1 — caught by `check_status ... 0` above. Drop
+# `captured` from nd-status instead, and the file reads as plain `new` with an
+# existing repo copy: "already in the repo, never placed" fires, and both
+# `check_status` and the `check_not` above go red.
+#
+# "no commit was made" below does not discriminate either regression, contrary
+# to what an earlier version of this comment claimed: this fixture's repo copy
+# is already byte-identical and committed, so even on the fold-in
+# `git status --porcelain -- "${paths[@]}"` is empty and nd-save exits at
+# "nothing to commit" before `git commit` ever runs — HEAD does not move
+# either way, and nothing here can make it. It stays anyway as cheap
+# insurance against an unrelated mistake: a future rewrite of the commit step
+# that fires regardless of what `git status` said. Logged as C9.
 d=$(new_glob_fixture)
 printf '{"pinned":"abc"}\n' > "$d/home/.config/nv/lazy-lock.json"
 install -m 0644 "$d/home/.config/nv/lazy-lock.json" "$d/repo/files/nv/lazy-lock.json"
@@ -1309,8 +1339,9 @@ rm -rf "$d"
 # it would catch a regression if the guard were removed and cmp were left to
 # meet the directory on its own. (cmp exiting 2 for "could not read one of
 # them" rather than 1 for "they differ" is real, and is exactly the reasoning
-# behind nd-save's unplaced-edit blocker a few hundred lines down — this case
-# just does not reach it.)
+# behind the unplaced-edit blocker in packages/nd-save.nix — its own tests are
+# the block above, around "an unplaced repo edit is still refused", not
+# further down this file; this case just does not reach it.)
 d=$(new_fixture)
 drift "$d"
 rm "$d/repo/files/config.toml"

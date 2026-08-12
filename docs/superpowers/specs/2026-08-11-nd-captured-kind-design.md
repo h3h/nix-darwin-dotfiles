@@ -342,7 +342,11 @@ it ambiguous; whether it should further distinguish its two remaining risks is
 not part of this change.
 
 E17 — whether `--rollback` should honour the gate — is untouched and stays open.
-A rollback will report `captured` the same way a switch does.
+A rollback will report `captured`, but not with a switch's closing sentence: a
+rollback places the *previous* generation's store content, not the repo
+working tree, so "switching re-places them from the repo; nothing is lost"
+would be false there — the file the repo captured is about to be reverted,
+not re-placed. The rollback label gets its own sentence saying so.
 
 The manifest format is unchanged. No new state is written anywhere. The whole
 fix reads existing fields.
