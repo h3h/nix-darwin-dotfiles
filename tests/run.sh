@@ -1064,7 +1064,7 @@ rm -rf "$d"
 # "nothing to commit" before `git commit` ever runs — HEAD does not move
 # either way, and nothing here can make it. It stays anyway as cheap
 # insurance against an unrelated mistake: a future rewrite of the commit step
-# that fires regardless of what `git status` said. Logged as C9.
+# that fires regardless of what `git status` said.
 d=$(new_glob_fixture)
 printf '{"pinned":"abc"}\n' > "$d/home/.config/nv/lazy-lock.json"
 install -m 0644 "$d/home/.config/nv/lazy-lock.json" "$d/repo/files/nv/lazy-lock.json"
@@ -1078,8 +1078,8 @@ check_not "and is not refused as never placed" "never placed" "$out"
 check "no commit was made" "captured" "$(git -C "$d/repo" log -1 --format=%s)"
 rm -rf "$d"
 
-# The commit leak (C6 in docs/superpowers/escalations-2026-08-11-nd-captured.md):
-# a managed repo path containing glob metacharacters, alongside an unrelated
+# The commit leak: a managed repo path containing glob metacharacters,
+# alongside an unrelated
 # tracked file the glob would match that the user has modified in their own
 # working tree. Before nd_git, `git add -- "${paths[@]}"` staged the managed
 # path literally and the decoy by glob at the same time, and
@@ -1161,8 +1161,7 @@ rm -rf "$d"
 # path whenever a decoy exists to trigger it. The array is still routed
 # through nd_git above, because it is still wrong on its own terms, but
 # nothing in this suite can currently tell the two versions apart by observed
-# behaviour. See C6 in docs/superpowers/escalations-2026-08-11-nd-captured.md
-# for the fuller reasoning.
+# behaviour.
 
 echo "nd-status"
 
@@ -1670,8 +1669,7 @@ check "the repo holds the live content" "setting = 2" "$(cat "$d/repo/files/conf
 # check_status against 0 is not reachable here: the fixture's flake.nix is a
 # bare "{}", so the real `nix build` this reaches always fails under errexit,
 # and that failure's exit 1 is indistinguishable from a gate refusal's exit 1
-# (see the "a missing file does not block" case above, and C3 in
-# docs/superpowers/escalations-2026-08-11-nd-captured.md). What discriminates
+# (see the "a missing file does not block" case above). What discriminates
 # the fix from the deadlock is whether the build step was reached at all: a
 # refusal exits before ever printing "building".
 out=$(run_switch "$d")

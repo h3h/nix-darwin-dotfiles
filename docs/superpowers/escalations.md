@@ -1,11 +1,11 @@
 # Escalations — nd globs and defect fixes
 
-Plan: `docs/superpowers/plans/2026-08-09-nd-globs-and-defects.md`
 Spec: `docs/superpowers/specs/2026-08-09-nd-globs-and-defects-design.md`
 
-Entry format is defined in the plan's "Escalation protocol" section.
-Statuses: `open` (needs a decision), `resolved` (decided, with reasoning
-recorded), `unresolved` (escalated and still undecided at hand-off).
+The plan this log was written against is no longer tracked; implementation
+plans are working notes and are kept out of the repo. Statuses: `open` (needs
+a decision), `resolved` (decided, with reasoning recorded), `unresolved`
+(escalated and still undecided at hand-off).
 
 ---
 
