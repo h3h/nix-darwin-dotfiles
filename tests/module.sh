@@ -283,6 +283,13 @@ check_eq "and the other two are still set" "$ND_FLAKE_PATH" \
 check_eq "an empty host sets nothing" "NOTSET" \
   "$(probe "$ND_WRAP_NOHOST_SWITCH" ND_HOST)"
 
+# The flag AFTER the omitted one is the direction that can actually break: an
+# empty `host` drops a middle element of wrapFlags, which is exactly the
+# truncation the list form exists to prevent. The noBranch mirror above checks
+# ND_FLAKE, which precedes its conditional and so cannot regress.
+check_eq "and the flag after it survives" "$ND_EXPECTED_BRANCH_VALUE" \
+  "$(probe "$ND_WRAP_NOHOST_SWITCH" ND_EXPECTED_BRANCH)"
+
 # Reading the exports back is not the same as the program receiving them, so one
 # case goes the whole way: nd-status names the manifest it was told to read.
 out=$(HOME="$tmp/nowhere" "$ND_WRAP_STATUS" 2>&1)

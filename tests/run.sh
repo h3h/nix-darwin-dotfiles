@@ -291,6 +291,16 @@ out=$(HOME="$d/home" ND_FLAKE="$d/repo" ND_HOST=default "$ND_SWITCH" --build 2>&
 check "ND_HOST selects the configuration attribute" "building default from" "$out"
 rm -rf "$d"
 
+# The bottom row of the precedence table: no ND_HOST and no option means the
+# short hostname, which is the behaviour every pre-existing configuration
+# depends on. Both sides call the same /bin/hostname -s in the same
+# environment, so this compares nd-switch's resolution against its own source
+# of truth rather than against a hardcoded name.
+d=$(new_fixture)
+out=$(HOME="$d/home" ND_FLAKE="$d/repo" "$ND_SWITCH" --build 2>&1)
+check "no ND_HOST falls back to the short hostname" "building $(/bin/hostname -s) from" "$out"
+rm -rf "$d"
+
 # Captured content does not block. The new generation builds this file from the
 # repo copy, which is byte-identical to what is live, so the overwrite has
 # nothing to discard. Refusing here is the deadlock the issue is about.

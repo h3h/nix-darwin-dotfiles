@@ -149,7 +149,8 @@ let
         makeWrapper "${drv}/bin/${name}" "$out/bin/${name}" ${wrapFlags}
       '';
 
-  # ND_EXPECTED_BRANCH is set on all three for uniformity; only nd-save reads it.
+  # ND_EXPECTED_BRANCH and ND_HOST are set on all three for uniformity; only
+  # nd-save reads the first, only nd-switch the second.
   ndSwitch = wrap "nd-switch" ndPkgs.nd-switch;
   ndSave = wrap "nd-save" ndPkgs.nd-save;
   ndStatus = wrap "nd-status" ndPkgs.nd-status;
@@ -305,6 +306,10 @@ in
       description = ''
         `darwinConfigurations` attribute `nd-switch` builds and switches to.
         Empty means the short hostname.
+
+        A single attribute name, not a dotted path: a value containing `.` is
+        read as a nested attribute path, which is why the hostname fallback
+        uses `hostname -s` rather than the FQDN.
 
         A multi-host repo names each configuration after its machine, and the
         hostname finds it with nothing declared here. A host-agnostic
