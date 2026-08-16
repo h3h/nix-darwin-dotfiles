@@ -93,6 +93,10 @@ let
     flakePath = "/opt/flakes/dotfiles";
     manifestPath = ".local/state/nd/manifest";
     expectedBranch = "trunk";
+    # Neither a plausible hostname nor `default`: a fixture value that could
+    # coincide with the developer's real machine, or with a real attribute in
+    # some flake, is one that lets an assertion pass for the wrong reason.
+    host = "example";
     files.".config/app/config.toml" = "app/config.toml";
     globs.".config/nv" = {
       source = "nv";
@@ -109,6 +113,11 @@ let
   # rather than set it to the empty string — nd-save reads "" as no constraint,
   # but only because the variable is absent from the wrapper entirely.
   noBranch = evalND (base // { expectedBranch = ""; });
+
+  # host defaults to "", which must leave ND_HOST unset rather than set it to
+  # the empty string — nd-switch reads an absent ND_HOST as "use the hostname",
+  # and an empty one would be a hostname the wrapper chose for the user.
+  noHost = evalND (base // { host = ""; });
 
   # The fresh-machine state: the only pattern is one that matches nothing in the
   # repo yet. It must produce a glob record, no file records, and no error.
@@ -211,9 +220,11 @@ in
   wrapSave = wrapperOf main "nd-save";
   wrapStatus = wrapperOf main "nd-status";
   wrapNoBranchSave = wrapperOf noBranch "nd-save";
+  wrapNoHostSwitch = wrapperOf noHost "nd-switch";
 
   homeDirectory = homeDir;
   flakePath = base.flakePath;
   expectedBranch = base.expectedBranch;
+  host = base.host;
   manifestPath = base.manifestPath;
 }

@@ -131,6 +131,7 @@ let
       "--set-default ND_FLAKE ${lib.escapeShellArg cfg.flakePath}"
       "--set-default ND_MANIFEST ${lib.escapeShellArg "${config.home.homeDirectory}/${cfg.manifestPath}"}"
     ]
+    ++ lib.optional (cfg.host != "") "--set-default ND_HOST ${lib.escapeShellArg cfg.host}"
     ++ lib.optional (
       cfg.expectedBranch != ""
     ) "--set-default ND_EXPECTED_BRANCH ${lib.escapeShellArg cfg.expectedBranch}"
@@ -294,6 +295,24 @@ in
 
         A detached HEAD is refused whatever this is set to: the commit would be
         unreachable as soon as anything else is checked out.
+      '';
+    };
+
+    host = mkOption {
+      type = types.str;
+      default = "";
+      example = "default";
+      description = ''
+        `darwinConfigurations` attribute `nd-switch` builds and switches to.
+        Empty means the short hostname.
+
+        A multi-host repo names each configuration after its machine, and the
+        hostname finds it with nothing declared here. A host-agnostic
+        single-user flake exposes one `darwinConfigurations.default` instead,
+        precisely so no hostname is written down anywhere; set this to
+        `default` and `nd-switch` stops looking for a machine-named attribute.
+
+        `ND_HOST` overrides this for one run.
       '';
     };
 
