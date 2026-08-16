@@ -244,12 +244,15 @@ number of managed files:
 nd: 1 missing, 1 new config file(s) — run nd-save to audit and commit
 ```
 
-`nd-switch` reads the hostname, so it needs no per-machine configuration. The
-defaults are overridable from the environment: `ND_FLAKE` and `ND_HOST` by
-`nd-switch`, `ND_FLAKE`, `ND_MANIFEST` and `ND_EXPECTED_BRANCH` by `nd-save`,
-`ND_MANIFEST` by all three. When the commands come from the module, `flakePath`,
-`manifestPath` and `expectedBranch` are baked into wrappers as *defaults*, so an
-explicitly exported `ND_*` still wins.
+`nd-switch` reads the hostname, so a repo that names each configuration after
+its machine needs nothing declared. A host-agnostic flake that exposes a single
+`darwinConfigurations.default` — so that no hostname is written down anywhere —
+sets `programs.nd.host = "default"` once instead. The defaults are overridable
+from the environment: `ND_FLAKE` and `ND_HOST` by `nd-switch`, `ND_FLAKE`,
+`ND_MANIFEST` and `ND_EXPECTED_BRANCH` by `nd-save`, `ND_MANIFEST` by all three.
+When the commands come from the module, `flakePath`, `host`, `manifestPath` and
+`expectedBranch` are baked into wrappers as *defaults*, so an explicitly
+exported `ND_*` still wins.
 
 ## Safety
 
@@ -342,6 +345,9 @@ directory.
   it — but any drift you had not saved is gone. It names what it is about to
   discard first; unlike an ordinary switch, it warns rather than refusing,
   because a rollback is usually the repair.
+- `nd-switch` does not inspect the flake to discover which configurations it
+  exposes. It builds the hostname, or `programs.nd.host` if you set one; if that
+  attribute is not there, `nix build` says so and names it.
 - macOS and nix-darwin only. The package builds anywhere; `nd-switch` calls
   `darwin-rebuild`.
 

@@ -120,6 +120,23 @@ let
   # which is what the tests and the documented ND_* overrides rely on.
   ndPkgs = self.packages.${pkgs.stdenv.hostPlatform.system};
 
+  # A list, rather than arguments written inline on the makeWrapper call below.
+  # Inline, that call is a backslash-continued shell command, and a conditional
+  # argument in the middle of one collapses to a blank line between a trailing
+  # `\` and the next flag — which ends the command there and silently drops
+  # every flag after it. A list has no such positional hazard, so a new
+  # conditional flag can go anywhere in it.
+  wrapFlags = lib.concatStringsSep " " (
+    [
+      "--set-default ND_FLAKE ${lib.escapeShellArg cfg.flakePath}"
+      "--set-default ND_MANIFEST ${lib.escapeShellArg "${config.home.homeDirectory}/${cfg.manifestPath}"}"
+    ]
+    ++ lib.optional (cfg.host != "") "--set-default ND_HOST ${lib.escapeShellArg cfg.host}"
+    ++ lib.optional (
+      cfg.expectedBranch != ""
+    ) "--set-default ND_EXPECTED_BRANCH ${lib.escapeShellArg cfg.expectedBranch}"
+  );
+
   wrap =
     name: drv:
     pkgs.runCommand "${name}-nd"
@@ -129,15 +146,11 @@ let
       }
       ''
         mkdir -p "$out/bin"
-        makeWrapper "${drv}/bin/${name}" "$out/bin/${name}" \
-          --set-default ND_FLAKE ${lib.escapeShellArg cfg.flakePath} \
-          --set-default ND_MANIFEST ${lib.escapeShellArg "${config.home.homeDirectory}/${cfg.manifestPath}"} \
-          ${lib.optionalString (
-            cfg.expectedBranch != ""
-          ) "--set-default ND_EXPECTED_BRANCH ${lib.escapeShellArg cfg.expectedBranch}"}
+        makeWrapper "${drv}/bin/${name}" "$out/bin/${name}" ${wrapFlags}
       '';
 
-  # ND_EXPECTED_BRANCH is set on all three for uniformity; only nd-save reads it.
+  # ND_EXPECTED_BRANCH and ND_HOST are set on all three for uniformity; only
+  # nd-save reads the first, only nd-switch the second.
   ndSwitch = wrap "nd-switch" ndPkgs.nd-switch;
   ndSave = wrap "nd-save" ndPkgs.nd-save;
   ndStatus = wrap "nd-status" ndPkgs.nd-status;
@@ -283,6 +296,28 @@ in
 
         A detached HEAD is refused whatever this is set to: the commit would be
         unreachable as soon as anything else is checked out.
+      '';
+    };
+
+    host = mkOption {
+      type = types.str;
+      default = "";
+      example = "default";
+      description = ''
+        `darwinConfigurations` attribute `nd-switch` builds and switches to.
+        Empty means the short hostname.
+
+        A single attribute name, not a dotted path: a value containing `.` is
+        read as a nested attribute path, which is why the hostname fallback
+        uses `hostname -s` rather than the FQDN.
+
+        A multi-host repo names each configuration after its machine, and the
+        hostname finds it with nothing declared here. A host-agnostic
+        single-user flake exposes one `darwinConfigurations.default` instead,
+        precisely so no hostname is written down anywhere; set this to
+        `default` and `nd-switch` stops looking for a machine-named attribute.
+
+        `ND_HOST` overrides this for one run.
       '';
     };
 

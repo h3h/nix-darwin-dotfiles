@@ -2,8 +2,8 @@ result
 .direnv
 
 # Working notes from the implementation process, kept locally rather than in
-# the repo. The design docs under docs/superpowers/specs/ stay tracked; these
-# are the step-by-step plans and the per-change escalation logs, which are
-# scaffolding for the work rather than a record of what the code does.
+# the repo. The design docs under docs/ stay tracked; these are the
+# step-by-step plans and the per-change escalation logs, which are scaffolding
+# for the work rather than a record of what the code does.
 docs/superpowers/plans/
-docs/superpowers/escalations-*.md
+docs/superpowers/escalations*.md

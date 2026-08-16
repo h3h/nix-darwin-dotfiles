@@ -89,10 +89,12 @@
               export ND_WRAP_SAVE="${m.wrapSave}"
               export ND_WRAP_STATUS="${m.wrapStatus}"
               export ND_WRAP_NOBRANCH_SAVE="${m.wrapNoBranchSave}"
+              export ND_WRAP_NOHOST_SWITCH="${m.wrapNoHostSwitch}"
               export ND_STATUS_BIN="${self.packages.${system}.nd-status}/bin/nd-status"
               export ND_HOME_DIRECTORY="${m.homeDirectory}"
               export ND_FLAKE_PATH="${m.flakePath}"
               export ND_EXPECTED_BRANCH_VALUE="${m.expectedBranch}"
+              export ND_HOST_VALUE="${m.host}"
               export ND_MANIFEST_PATH="${m.manifestPath}"
               bash ${./tests/module.sh}
               touch $out

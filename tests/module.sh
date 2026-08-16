@@ -18,8 +18,9 @@ for v in ND_ACTIVATION ND_ACTIVATION_SPARSE ND_ACTIVATION_AFTER \
   ND_EXPECTED_MANIFEST ND_EXPECTED_SPARSE_MANIFEST ND_ZSH_INIT \
   ND_PACKAGE_NAMES ND_ASSERTION_FAILURES ND_BAD_ASSERTION_FAILURES \
   ND_WRAP_SWITCH ND_WRAP_SAVE ND_WRAP_STATUS ND_WRAP_NOBRANCH_SAVE \
+  ND_WRAP_NOHOST_SWITCH \
   ND_STATUS_BIN ND_HOME_DIRECTORY ND_FLAKE_PATH ND_EXPECTED_BRANCH_VALUE \
-  ND_MANIFEST_PATH; do
+  ND_MANIFEST_PATH ND_HOST_VALUE; do
   if [ -z "${!v:-}" ]; then
     echo "tests/module.sh: $v is not set" >&2
     exit 1
@@ -27,8 +28,10 @@ for v in ND_ACTIVATION ND_ACTIVATION_SPARSE ND_ACTIVATION_AFTER \
 done
 
 # The wrapper cases assert on what --set-default does with an inherited value,
-# so the three variables must start out genuinely unset.
-unset ND_FLAKE ND_MANIFEST ND_EXPECTED_BRANCH
+# so the four variables must start out genuinely unset. ND_HOST matters most
+# here: a developer running this suite on their own machine may well have it
+# exported for real.
+unset ND_FLAKE ND_MANIFEST ND_EXPECTED_BRANCH ND_HOST
 
 pass=0
 fail=0
@@ -250,6 +253,7 @@ for w in "$ND_WRAP_SWITCH" "$ND_WRAP_SAVE" "$ND_WRAP_STATUS"; do
     "$ND_HOME_DIRECTORY/$ND_MANIFEST_PATH" "$(probe "$w" ND_MANIFEST)"
   check_eq "$n gets ND_EXPECTED_BRANCH from expectedBranch" \
     "$ND_EXPECTED_BRANCH_VALUE" "$(probe "$w" ND_EXPECTED_BRANCH)"
+  check_eq "$n gets ND_HOST from host" "$ND_HOST_VALUE" "$(probe "$w" ND_HOST)"
 
   # --set-default, not --set: the documented ND_* overrides and the whole of
   # tests/run.sh depend on an explicit export still winning.
@@ -259,6 +263,8 @@ for w in "$ND_WRAP_SWITCH" "$ND_WRAP_SAVE" "$ND_WRAP_STATUS"; do
     "$(probe_with ND_MANIFEST=/elsewhere/manifest "$w" ND_MANIFEST)"
   check_eq "$n lets an explicit ND_EXPECTED_BRANCH win" "release" \
     "$(probe_with ND_EXPECTED_BRANCH=release "$w" ND_EXPECTED_BRANCH)"
+  check_eq "$n lets an explicit ND_HOST win" "elsewhere" \
+    "$(probe_with ND_HOST=elsewhere "$w" ND_HOST)"
 done
 
 # An empty expectedBranch means no constraint, which nd-save spells as the
@@ -268,6 +274,21 @@ check_eq "an empty expectedBranch sets nothing" "NOTSET" \
   "$(probe "$ND_WRAP_NOBRANCH_SAVE" ND_EXPECTED_BRANCH)"
 check_eq "and the other two are still set" "$ND_FLAKE_PATH" \
   "$(probe "$ND_WRAP_NOBRANCH_SAVE" ND_FLAKE)"
+
+# An empty host means "use the short hostname", which the wrapper spells as the
+# variable being absent rather than as an empty one. nd-switch's `${ND_HOST:-}`
+# would fall back on an empty value anyway, so this pins the intent rather than
+# repairing a live bug — but the day that `:-` becomes `-`, an empty export is a
+# switch that builds `darwinConfigurations.`, and this is the case that says so.
+check_eq "an empty host sets nothing" "NOTSET" \
+  "$(probe "$ND_WRAP_NOHOST_SWITCH" ND_HOST)"
+
+# The flag AFTER the omitted one is the direction that can actually break: an
+# empty `host` drops a middle element of wrapFlags, which is exactly the
+# truncation the list form exists to prevent. The noBranch mirror above checks
+# ND_FLAKE, which precedes its conditional and so cannot regress.
+check_eq "and the flag after it survives" "$ND_EXPECTED_BRANCH_VALUE" \
+  "$(probe "$ND_WRAP_NOHOST_SWITCH" ND_EXPECTED_BRANCH)"
 
 # Reading the exports back is not the same as the program receiving them, so one
 # case goes the whole way: nd-status names the manifest it was told to read.

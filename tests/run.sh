@@ -281,6 +281,26 @@ check "missing flake.nix is reported" "no flake.nix" "$out"
 check_status "missing flake.nix exits 1" 1 "$st"
 rm -rf "$d"
 
+# nd-switch resolves the attribute it builds from ND_HOST, falling back to the
+# short hostname when it is unset. That resolution had no test, and it is the
+# hinge the documented ND_HOST override — and anything that sets ND_HOST as a
+# default — rests on. Asserted before the build step, like every other --build
+# case here: the fixture's flake.nix is a bare "{}", so the build always fails.
+d=$(new_fixture)
+out=$(HOME="$d/home" ND_FLAKE="$d/repo" ND_HOST=default "$ND_SWITCH" --build 2>&1)
+check "ND_HOST selects the configuration attribute" "building default from" "$out"
+rm -rf "$d"
+
+# The bottom row of the precedence table: no ND_HOST and no option means the
+# short hostname, which is the behaviour every pre-existing configuration
+# depends on. Both sides call the same /bin/hostname -s in the same
+# environment, so this compares nd-switch's resolution against its own source
+# of truth rather than against a hardcoded name.
+d=$(new_fixture)
+out=$(HOME="$d/home" ND_FLAKE="$d/repo" "$ND_SWITCH" --build 2>&1)
+check "no ND_HOST falls back to the short hostname" "building $(/bin/hostname -s) from" "$out"
+rm -rf "$d"
+
 # Captured content does not block. The new generation builds this file from the
 # repo copy, which is byte-identical to what is live, so the overwrite has
 # nothing to discard. Refusing here is the deadlock the issue is about.
