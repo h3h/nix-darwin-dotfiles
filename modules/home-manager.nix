@@ -120,6 +120,22 @@ let
   # which is what the tests and the documented ND_* overrides rely on.
   ndPkgs = self.packages.${pkgs.stdenv.hostPlatform.system};
 
+  # A list, rather than arguments written inline on the makeWrapper call below.
+  # Inline, that call is a backslash-continued shell command, and a conditional
+  # argument in the middle of one collapses to a blank line between a trailing
+  # `\` and the next flag — which ends the command there and silently drops
+  # every flag after it. A list has no such positional hazard, so a new
+  # conditional flag can go anywhere in it.
+  wrapFlags = lib.concatStringsSep " " (
+    [
+      "--set-default ND_FLAKE ${lib.escapeShellArg cfg.flakePath}"
+      "--set-default ND_MANIFEST ${lib.escapeShellArg "${config.home.homeDirectory}/${cfg.manifestPath}"}"
+    ]
+    ++ lib.optional (
+      cfg.expectedBranch != ""
+    ) "--set-default ND_EXPECTED_BRANCH ${lib.escapeShellArg cfg.expectedBranch}"
+  );
+
   wrap =
     name: drv:
     pkgs.runCommand "${name}-nd"
@@ -129,12 +145,7 @@ let
       }
       ''
         mkdir -p "$out/bin"
-        makeWrapper "${drv}/bin/${name}" "$out/bin/${name}" \
-          --set-default ND_FLAKE ${lib.escapeShellArg cfg.flakePath} \
-          --set-default ND_MANIFEST ${lib.escapeShellArg "${config.home.homeDirectory}/${cfg.manifestPath}"} \
-          ${lib.optionalString (
-            cfg.expectedBranch != ""
-          ) "--set-default ND_EXPECTED_BRANCH ${lib.escapeShellArg cfg.expectedBranch}"}
+        makeWrapper "${drv}/bin/${name}" "$out/bin/${name}" ${wrapFlags}
       '';
 
   # ND_EXPECTED_BRANCH is set on all three for uniformity; only nd-save reads it.
