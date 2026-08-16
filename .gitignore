@@ -6,4 +6,4 @@ result
 # step-by-step plans and the per-change escalation logs, which are scaffolding
 # for the work rather than a record of what the code does.
 docs/superpowers/plans/
-docs/superpowers/escalations-*.md
+docs/superpowers/escalations*.md
