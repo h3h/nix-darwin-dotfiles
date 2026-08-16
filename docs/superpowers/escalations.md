@@ -1,6 +1,6 @@
 # Escalations — nd globs and defect fixes
 
-Spec: `docs/superpowers/specs/2026-08-09-nd-globs-and-defects-design.md`
+Spec: `docs/2026-08-09-nd-globs-and-defects-design.md`
 
 The plan this log was written against is no longer tracked; implementation
 plans are working notes and are kept out of the repo. Statuses: `open` (needs
