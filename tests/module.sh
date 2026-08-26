@@ -187,7 +187,7 @@ check "a glob record carries the - placeholder" "-${tab}.config/nv${tab}files/nv
 check_not "notes.txt matches no pattern and is not recorded" "notes.txt" "$manifest"
 check_eq "every glob record has five fields" "5 5" \
   "$(awk -F'\t' '$4 == "glob" { printf "%s ", NF }' "$h/$ND_MANIFEST_PATH" | sed 's/ $//')"
-check_eq "every file record has three" "3 3 3" \
+check_eq "every file record has three" "3 3 3 3" \
   "$(awk -F'\t' '$4 == "" { printf "%s ", NF }' "$h/$ND_MANIFEST_PATH" | sed 's/ $//')"
 check_eq "the last line is terminated" "" "$(tail -c 1 "$h/$ND_MANIFEST_PATH")"
 
@@ -240,10 +240,15 @@ check_eq "a real run places the glob matches" "return 1 return 2" \
   "$(cat "$h/.config/nv/init.lua" "$h/.config/nv/lua/plug.lua" | tr '\n' ' ' | sed 's/ $//')"
 check_absent "and places nothing a pattern did not match" "$h/.config/nv/notes.txt"
 
-# tests/fixtures/src/nv/init.lua is checked in executable; the source blob's
-# bit must survive placement without a declared mode.
-[ -x "$h/.config/nv/init.lua" ]; st=$?
+# tests/fixtures/src/nv/exec.lua is checked in executable; the source blob's
+# bit must survive placement without a declared mode. init.lua and plug.lua
+# stay non-executable in the fixture on purpose: the round-trip cases further
+# down reinstall them by hand at a fixed 0644, and giving them +x here would
+# make those unrelated cases fail on a mode mismatch they aren't testing for.
+[ -x "$h/.config/nv/exec.lua" ]; st=$?
 check_status "a real run preserves the executable bit on a glob-matched file" 0 "$st"
+[ ! -x "$h/.config/nv/init.lua" ]; st=$?
+check_status "a real run leaves an unrelated glob-matched file at 0644" 0 "$st"
 [ ! -x "$h/.config/app/config.toml" ]; st=$?
 check_status "a real run leaves a non-executable source at 0644" 0 "$st"
 

@@ -169,8 +169,12 @@ let
   # literal "-" in field 1 of a glob record (see escalation E7). File records
   # come from `files` first, then from each glob's matches in listFilesRecursive
   # order; notes.txt matches no pattern and must not appear at all.
+  # listFilesRecursive walks in name order, so exec.lua (added to prove the
+  # executable bit survives placement through a glob match) sorts before
+  # init.lua.
   expectedManifest =
     "${src "app/config.toml"}\t.config/app/config.toml\tfiles/app/config.toml\n"
+    + "${src "nv/exec.lua"}\t.config/nv/exec.lua\tfiles/nv/exec.lua\n"
     + "${src "nv/init.lua"}\t.config/nv/init.lua\tfiles/nv/init.lua\n"
     + "${src "nv/lua/plug.lua"}\t.config/nv/lua/plug.lua\tfiles/nv/lua/plug.lua\n"
     + "-\t.config/nv\tfiles/nv\tglob\t(.*/)?[^/]*\\.lua\n"

@@ -84,6 +84,17 @@ writeShellApplication {
       printf '%s' "$s"
     }
 
+    # `install` only ever places 0644 or 0755, so the executable bit is the
+    # only mode either side of a managed file can vary on; a full mode
+    # comparison would treat a umask the user set on the live file by hand
+    # (0644 vs 0640) as drift for no reason.
+    modes_match() { # modes_match <a> <b>
+      local a b
+      if [ -x "$1" ]; then a=1; else a=0; fi
+      if [ -x "$2" ]; then b=1; else b=0; fi
+      [ "$a" = "$b" ]
+    }
+
     # Answer, for a path whose content is not what the store placed — or that
     # nothing placed at all — whether that exact content is already in the repo
     # where the next switch would build it from. If it is, switching re-places
@@ -116,6 +127,14 @@ writeShellApplication {
 
       cmp -s "$flake/$repo_rel" "$HOME/$dest" || cmp_st=$?
       if [ "$cmp_st" -ne 0 ]; then
+        printf '%s' "$fallback"
+        return 0
+      fi
+
+      # Byte-identical is not enough: a repo copy committed before an
+      # executable bit was saved still matches on content, but the next
+      # switch would place it 0644 and silently discard the bit again.
+      if ! modes_match "$flake/$repo_rel" "$HOME/$dest"; then
         printf '%s' "$fallback"
         return 0
       fi
@@ -225,6 +244,12 @@ writeShellApplication {
               # it could not open either.
               cmp_st=0
               cmp -s "$src" "$HOME/$dest" || cmp_st=$?
+              # Content can match while the executable bit does not — the fix
+              # for placing and saving that bit is worthless if the one place
+              # that decides "nothing to do here" cannot see it change.
+              if [ "$cmp_st" -eq 0 ] && ! modes_match "$src" "$HOME/$dest"; then
+                cmp_st=1
+              fi
               case "$cmp_st" in
                 0) ;;
                 1) printf '%s\t%s\t%s\n' "$(kind_for drifted "$dest" "$repo_rel")" "$dest" "$repo_rel" ;;

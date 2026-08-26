@@ -491,6 +491,18 @@ check "drift is copied back" "copied back into the repo" "$out"
 check_status "the executable bit is preserved on save-back" 0 "$st"
 rm -rf "$d"
 
+# The scenario the fix exists for: no content change at all, only chmod +x.
+# Before nd-status compared modes, this file read as clean — cmp saw identical
+# bytes — so nd-save reported nothing to save and the bit was never
+# recoverable except by hand-editing the repo copy.
+d=$(new_fixture)
+chmod +x "$d/home/.config/app/config.toml"
+out=$(run_save "$d" -y -m "Make executable, no content change")
+check "a mode-only change is not nothing to save" "copied back into the repo" "$out"
+[ -x "$d/repo/files/config.toml" ]; st=$?
+check_status "a mode-only change is saved" 0 "$st"
+rm -rf "$d"
+
 # Defect 1. `git commit` with no pathspec commits everything already in the
 # index, so anything the user staged beforehand lands in a commit whose message
 # says it is application-written config. The fixture must therefore contain
@@ -1207,6 +1219,30 @@ d=$(new_fixture)
 drift "$d"
 out=$(run_status "$d")
 check "drifted is classified" "drifted	.config/app/config.toml	files/config.toml" "$out"
+rm -rf "$d"
+
+# A mode-only change is drift too: byte-identical content hid it from cmp
+# before modes_match existed, and a switch would have silently re-placed the
+# file 0644 with nothing ever telling nd-save there was something to save.
+d=$(new_fixture)
+chmod +x "$d/home/.config/app/config.toml"
+out=$(run_status "$d")
+check "an executable-only change is classified as drifted" \
+  "drifted	.config/app/config.toml	files/config.toml" "$out"
+rm -rf "$d"
+
+# The other half of modes_match: a mode-only change nd-save already committed
+# — same content, same +x, both tracked — must read as captured, not drifted
+# forever. Byte-identical content alone used to be enough for kind_for to say
+# so; a repo copy left at 0644 while the live file is 0755 must not pass.
+d=$(new_fixture)
+chmod +x "$d/home/.config/app/config.toml"
+install -m 0755 "$d/home/.config/app/config.toml" "$d/repo/files/config.toml"
+git -C "$d/repo" add -A
+git -C "$d/repo" commit -qm captured
+out=$(run_status "$d")
+check "an executable-only change already committed is captured" \
+  "captured	.config/app/config.toml	files/config.toml" "$out"
 rm -rf "$d"
 
 d=$(new_fixture)
