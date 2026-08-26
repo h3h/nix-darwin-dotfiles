@@ -240,6 +240,13 @@ check_eq "a real run places the glob matches" "return 1 return 2" \
   "$(cat "$h/.config/nv/init.lua" "$h/.config/nv/lua/plug.lua" | tr '\n' ' ' | sed 's/ $//')"
 check_absent "and places nothing a pattern did not match" "$h/.config/nv/notes.txt"
 
+# tests/fixtures/src/nv/init.lua is checked in executable; the source blob's
+# bit must survive placement without a declared mode.
+[ -x "$h/.config/nv/init.lua" ]; st=$?
+check_status "a real run preserves the executable bit on a glob-matched file" 0 "$st"
+[ ! -x "$h/.config/app/config.toml" ]; st=$?
+check_status "a real run leaves a non-executable source at 0644" 0 "$st"
+
 echo
 echo "wrappers"
 

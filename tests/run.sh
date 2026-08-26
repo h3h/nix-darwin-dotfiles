@@ -476,6 +476,19 @@ check "drift is copied back" "copied back into the repo" "$out"
 check "drift is committed" "committed" "$out"
 check "repo now holds the new content" "setting = 2" "$(cat "$d/repo/files/config.toml")"
 check "commit message is used" "Update app config" "$(git -C "$d/repo" log -1 --format=%s)"
+[ ! -x "$d/repo/files/config.toml" ]; st=$?
+check_status "a non-executable file stays non-executable on save-back" 0 "$st"
+rm -rf "$d"
+
+# The executable bit is preserved from the live file, not declared, so it must
+# survive the copy back into the repo the same way it survives placement.
+d=$(new_fixture)
+drift "$d"
+chmod +x "$d/home/.config/app/config.toml"
+out=$(run_save "$d" -y -m "Make executable")
+check "drift is copied back" "copied back into the repo" "$out"
+[ -x "$d/repo/files/config.toml" ]; st=$?
+check_status "the executable bit is preserved on save-back" 0 "$st"
 rm -rf "$d"
 
 # Defect 1. `git commit` with no pathspec commits everything already in the

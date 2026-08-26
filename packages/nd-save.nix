@@ -404,9 +404,14 @@ writeShellApplication {
           fi
           ;;
       esac
-      # 0644 is deliberate, not an oversight. See the comment in
-      # modules/home-manager.nix on why per-file modes are not offered.
-      install -m 0644 "$HOME/$dest" "$flake/$repo_rel"
+      # World-readable is deliberate, not an oversight; see the comment in
+      # modules/home-manager.nix. The executable bit is preserved from the
+      # live file rather than declared, so it round-trips through git.
+      if [ -x "$HOME/$dest" ]; then
+        install -m 0755 "$HOME/$dest" "$flake/$repo_rel"
+      else
+        install -m 0644 "$HOME/$dest" "$flake/$repo_rel"
+      fi
       copied="$copied$dest
     "
       paths+=("$repo_rel")

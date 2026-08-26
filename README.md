@@ -331,9 +331,11 @@ directory.
 
 ## Limitations
 
-- Files are placed mode `0644`, deliberately: the credential scan's position is
-  that nothing secret belongs in a managed file, and git records only the
-  executable bit, so a per-file mode could not survive the round-trip anyway.
+- Files are placed mode `0644`, or `0755` if the source blob is executable,
+  deliberately: the credential scan's position is that nothing secret belongs
+  in a managed file, and the executable bit is preserved rather than declared
+  since it is the one permission git already round-trips. No other per-file
+  mode is offered.
 - Glob patterns support `**/`, a trailing `/**`, `*` and `?`. Bracket
   expressions and brace expansion match literally.
 - Only regular files are enumerated under a glob root; symlinks, directories and

@@ -395,11 +395,11 @@ in
     # *through* an old out-of-store symlink straight back into the repo, which
     # silently preserves the exact behaviour this module replaces.
     #
-    # 0644 is deliberate. The position the credential scan in nd-save enforces is
-    # that no credential belongs in a managed file; if that holds, 0644 is
-    # correct. A per-file mode option would not survive the repo round-trip in
-    # any case, because git records only the executable bit. Closed as wontfix,
-    # not overlooked.
+    # World-readable (not 0600) is deliberate: the credential scan in nd-save
+    # enforces that no credential belongs in a managed file, and if that holds,
+    # 0644/0755 is correct. The executable bit is preserved from the source
+    # blob rather than declared, because it is the one permission git already
+    # round-trips — no per-file mode option is offered or needed.
     home.activation.ndPlaceManagedConfigs = lib.hm.dag.entryAfter [ "writeBoundary" ] ''
       manifest="$HOME/${cfg.manifestPath}"
       run mkdir -p "$(dirname "$manifest")"
@@ -409,7 +409,11 @@ in
         if [ -L "$HOME/${f.dest}" ]; then
           run rm -f "$HOME/${f.dest}"
         fi
-        run install -m 0644 ${f.src} "$HOME/${f.dest}"
+        if [ -x ${f.src} ]; then
+          run install -m 0755 ${f.src} "$HOME/${f.dest}"
+        else
+          run install -m 0644 ${f.src} "$HOME/${f.dest}"
+        fi
       '') fileRecords}
 
       # Built in one variable and written once, so a dry run writes nothing at
