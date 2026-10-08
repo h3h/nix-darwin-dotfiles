@@ -46,11 +46,11 @@ no() {
 }
 
 check() { # check <name> <expected-substring> <actual>
-  if printf '%s' "$3" | grep -qF "$2"; then ok "$1"; else no "$1" "wanted '$2' in: $(printf '%s' "$3" | tr '\n' '|')"; fi
+  if printf '%s' "$3" | grep -qF -e "$2"; then ok "$1"; else no "$1" "wanted '$2' in: $(printf '%s' "$3" | tr '\n' '|')"; fi
 }
 
 check_not() {
-  if printf '%s' "$3" | grep -qF "$2"; then no "$1" "did not want '$2'"; else ok "$1"; fi
+  if printf '%s' "$3" | grep -qF -e "$2"; then no "$1" "did not want '$2'"; else ok "$1"; fi
 }
 
 check_empty() { # check_empty <name> <actual>
@@ -186,10 +186,20 @@ new_multi_fixture() {
 stub_bin="$(mktemp -d)"
 printf '#!/bin/sh\necho "stub sudo $*"\n' > "$stub_bin/sudo"
 chmod +x "$stub_bin/sudo"
+
+# The override cases need to see the arguments nd-switch hands to nix, and must
+# not build anything. A stub nix that echoes and succeeds stands in, on the same
+# PATH as the stub sudo, so the switch path runs to the end.
+printf '#!/bin/sh\necho "stub nix $*"\n' > "$stub_bin/nix"
+chmod +x "$stub_bin/nix"
 trap 'rm -rf "$stub_bin"' EXIT
 
 run_switch() { HOME="$1/home" ND_FLAKE="$1/repo" "$ND_SWITCH" "${@:2}" 2>&1; }
 run_rollback() { HOME="$1/home" ND_FLAKE="$1/repo" PATH="$stub_bin:$PATH" "$ND_SWITCH" "${@:2}" 2>&1; }
+run_switch_stubbed() { # run_switch_stubbed <fixture> <ND_OVERRIDES> [args...]
+  HOME="$1/home" ND_FLAKE="$1/repo" ND_HOST=example ND_OVERRIDES="$2" \
+    PATH="$stub_bin:$PATH" "$ND_SWITCH" "${@:3}" 2>&1
+}
 run_save() { HOME="$1/home" ND_FLAKE="$1/repo" "$ND_SAVE" "${@:2}" 2>&1; }
 run_status() { HOME="$1/home" ND_FLAKE="$1/repo" "$ND_STATUS" "${@:2}" 2>&1; }
 
@@ -1845,6 +1855,48 @@ printf '# t\n' > "$d/home/.claude/skills/two/SKILL.md"
 out=$(run_status "$d")
 check "a new file outside the deeper root belongs to the shallower one" \
   "new	.claude/skills/two/SKILL.md	$d/shared/files/skills/two/SKILL.md" "$out"
+rm -rf "$d"
+
+echo "multiple sources: nd-switch"
+d=$(new_multi_fixture)
+head_shared="$(git -C "$d/shared" rev-parse HEAD)"
+ovr="$(printf 'dotfiles\t%s' "$d/shared")"
+
+# A lock whose node for the input is at a different revision than the checkout.
+cat > "$d/repo/flake.lock" << EOF
+{"nodes":{"root":{"inputs":{"dotfiles":"dotfiles"}},
+ "dotfiles":{"locked":{"rev":"0000000000000000000000000000000000000000"}}},
+ "root":"root","version":7}
+EOF
+
+out=$(run_switch_stubbed "$d" "$ovr")
+check "the build overrides the input with the checkout" \
+  "stub nix build --no-link $d/repo#darwinConfigurations.example.system --override-input dotfiles git+file://$d/shared" "$out"
+check "the switch overrides it too" \
+  "darwin-rebuild switch --flake $d/repo#example --override-input dotfiles git+file://$d/shared" "$out"
+check "the checkout and its HEAD are named" \
+  "nd-switch: dotfiles from $d/shared (HEAD ${head_shared:0:7})" "$out"
+check "a lagging lock is reported" \
+  "lock is at 0000000 — push it, then: nix flake update dotfiles" "$out"
+
+# A lock that matches the checkout says nothing about lag.
+sed -i.bak "s/0000000000000000000000000000000000000000/$head_shared/" "$d/repo/flake.lock"
+out=$(run_switch_stubbed "$d" "$ovr")
+check_not "a current lock is not reported" "lock is at" "$out"
+
+# --build passes the override as well, and stops before sudo.
+out=$(run_switch_stubbed "$d" "$ovr" --build)
+check "--build overrides too" "--override-input dotfiles git+file://$d/shared" "$out"
+check_not "--build does not switch" "darwin-rebuild" "$out"
+
+# No checkout: fall back to the lock, say so, pass no override.
+out=$(run_switch_stubbed "$d" "$(printf 'dotfiles\t%s' "$d/nowhere")")
+check "a missing checkout is named" "nd-switch: dotfiles: no checkout at $d/nowhere, building the locked revision" "$out"
+check_not "a missing checkout passes no override" "--override-input" "$out"
+
+# Rollback never builds, so it never overrides.
+out=$(HOME="$d/home" ND_FLAKE="$d/repo" ND_OVERRIDES="$ovr" PATH="$stub_bin:$PATH" "$ND_SWITCH" --rollback 2>&1)
+check_not "a rollback passes no override" "--override-input" "$out"
 rm -rf "$d"
 
 echo

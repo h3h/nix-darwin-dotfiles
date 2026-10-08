@@ -3,6 +3,7 @@
   coreutils,
   gnused,
   gnugrep,
+  jq,
   nd-status,
 }:
 
@@ -17,6 +18,7 @@ writeShellApplication {
     coreutils
     gnused
     gnugrep
+    jq
     nd-status
   ];
   text = ''
@@ -70,6 +72,7 @@ writeShellApplication {
           echo "  --allow-dirty   switch anyway, discarding the contents of drifted"
           echo "                  files; they are named before anything is built"
           echo "  --rollback [N]  go back N generations (default 1)"
+          echo "  ND_OVERRIDES  extra sources to build from local checkouts (set by the module)"
           exit 0
           ;;
         --)
@@ -266,8 +269,42 @@ writeShellApplication {
       exit 1
     fi
 
+    # Each programs.nd.sources entry is a flake input whose files nd-save
+    # captures into a local checkout. Building the locked revision instead would
+    # make `captured` a lie: the capture is in the checkout, the lock does not
+    # have it, and the switch would overwrite the live file with older content.
+    # So each usable checkout overrides its input, and the lock is allowed to
+    # lag — which is said out loud, because a lagging lock is how a change ends
+    # up working on this machine and nowhere else.
+    #
+    # git+file sees uncommitted edits to tracked files and not untracked ones:
+    # the same visibility the default flake has, which `captured` relies on.
+    locked_rev() { # locked_rev <input>
+      jq -r --arg i "$1" '.nodes[.nodes.root.inputs[$i]].locked.rev // empty' \
+        "$flake/flake.lock" 2> /dev/null || true
+    }
+
+    override_args=()
+    while IFS="$tab" read -r ovr_input ovr_checkout; do
+      if [ -z "''${ovr_input:-}" ]; then
+        continue
+      fi
+      if [ -f "$ovr_checkout/flake.nix" ] \
+        && git -C "$ovr_checkout" rev-parse --is-inside-work-tree > /dev/null 2>&1; then
+        override_args+=(--override-input "$ovr_input" "git+file://$ovr_checkout")
+        ovr_head="$(git -C "$ovr_checkout" rev-parse HEAD 2> /dev/null || true)"
+        echo "nd-switch: $ovr_input from $ovr_checkout (HEAD ''${ovr_head:0:7})"
+        ovr_locked="$(locked_rev "$ovr_input")"
+        if [ -n "$ovr_head" ] && [ -n "$ovr_locked" ] && [ "$ovr_head" != "$ovr_locked" ]; then
+          echo "nd-switch:   lock is at ''${ovr_locked:0:7} — push it, then: nix flake update $ovr_input"
+        fi
+      else
+        echo "nd-switch: $ovr_input: no checkout at $ovr_checkout, building the locked revision"
+      fi
+    done <<< "''${ND_OVERRIDES:-}"
+
     echo "nd-switch: building $host from $flake"
-    nix build --no-link "$flake#darwinConfigurations.$host.system"
+    nix build --no-link "$flake#darwinConfigurations.$host.system" "''${override_args[@]}"
 
     if [ -n "$build_only" ]; then
       echo "nd-switch: build only, not switching"
@@ -281,7 +318,7 @@ writeShellApplication {
       echo "nd-switch: roll back with  sudo /nix/var/nix/profiles/system-$gen-link/activate"
     fi
 
-    sudo darwin-rebuild switch --flake "$flake#$host" "$@"
+    sudo darwin-rebuild switch --flake "$flake#$host" "''${override_args[@]}" "$@"
 
     echo "nd-switch: done. Relaunch your terminal fully if PATH or packages changed."
   '';
