@@ -147,27 +147,44 @@ writeShellApplication {
     # through nd_git, including the six below that take no pathspec at all,
     # closes that gap structurally rather than by vigilance: uniformity is the
     # point, and an exception is a place to forget.
+    #
+    # The repository is $repo rather than $flake because captures are grouped
+    # by the repo that owns them now, and each group's git work has to land in
+    # its own repo; it starts at the default flake and is pointed at each
+    # group in turn.
+    repo="$flake"
     nd_git() {
-      git --literal-pathspecs -C "$flake" "$@"
+      git --literal-pathspecs -C "$repo" "$@"
     }
 
-    if ! nd_git rev-parse --git-dir > /dev/null 2>&1; then
-      echo "nd-save: $flake is not a git repository" >&2
-      exit 1
-    fi
+    # The git-dir check and the detached-HEAD refusal, for whichever repo $repo
+    # names. Every repo a capture would land in gets both, and gets them
+    # before anything is copied anywhere. The branch it finds is left in
+    # $repo_branch.
+    check_repo() {
+      if ! nd_git rev-parse --git-dir > /dev/null 2>&1; then
+        echo "nd-save: $repo is not a git repository" >&2
+        exit 1
+      fi
+
+      repo_branch="$(nd_git branch --show-current)"
+
+      if [ -z "$repo_branch" ]; then
+        echo "nd-save: HEAD is detached in $repo — refusing." >&2
+        echo "nd-save: a commit here becomes unreachable as soon as anything else is checked out." >&2
+        echo "nd-save: run 'git switch <branch>' first." >&2
+        exit 1
+      fi
+    }
 
     # The branch guard runs before the scan and before any copy. With -y the old
     # code printed the branch to a terminal nobody is reading and committed
     # regardless, so the unattended path — the one -y exists for — was the only
-    # path with no check.
-    branch="$(nd_git branch --show-current)"
-
-    if [ -z "$branch" ]; then
-      echo "nd-save: HEAD is detached in $flake — refusing." >&2
-      echo "nd-save: a commit here becomes unreachable as soon as anything else is checked out." >&2
-      echo "nd-save: run 'git switch <branch>' first." >&2
-      exit 1
-    fi
+    # path with no check. It guards the default repo only: an extra source is
+    # shared between machines and its branch is not this machine's setting.
+    repo_branch=""
+    check_repo
+    branch="$repo_branch"
 
     if [ -n "$expected_branch" ] && [ "$branch" != "$expected_branch" ]; then
       echo "nd-save: on branch '$branch', expected '$expected_branch' — refusing." >&2
@@ -242,6 +259,84 @@ writeShellApplication {
       exit 0
     fi
 
+    # Each candidate is resolved to the repo that owns it and its path inside
+    # that repo. A relative repo path belongs to the default flake; an absolute
+    # one belongs to the extra-source checkout it sits under, the longest one
+    # when checkouts nest. An absolute path under no checkout fails closed:
+    # guessing a repo for it would commit into a tree nobody declared.
+    ovr_inputs=()
+    ovr_checkouts=()
+    while IFS="$tab" read -r ovr_input ovr_checkout; do
+      if [ -z "''${ovr_input:-}" ] || [ -z "''${ovr_checkout:-}" ]; then
+        continue
+      fi
+      ovr_inputs+=("$ovr_input")
+      ovr_checkouts+=("$ovr_checkout")
+    done <<< "''${ND_OVERRIDES:-}"
+
+    resolved=""
+    while IFS="$tab" read -r kind dest repo_path; do
+      if [ -z "''${dest:-}" ]; then
+        continue
+      fi
+      case "$repo_path" in
+        /*)
+          owner=""
+          for c in "''${ovr_checkouts[@]}"; do
+            case "$repo_path" in
+              "$c"/*)
+                if [ "''${#c}" -gt "''${#owner}" ]; then
+                  owner="$c"
+                fi
+                ;;
+            esac
+          done
+          if [ -z "$owner" ]; then
+            echo "nd-save: $repo_path is outside every known repo (ND_FLAKE and ND_OVERRIDES); nothing copied." >&2
+            exit 1
+          fi
+          rel="''${repo_path#"$owner"/}"
+          ;;
+        *)
+          owner="$flake"
+          rel="$repo_path"
+          ;;
+      esac
+      resolved="$resolved$kind$tab$dest$tab$owner$tab$rel$tab$repo_path
+    "
+    done < <(printf '%s\n' "$candidates")
+
+    # The repos with something to capture, default flake first and then the
+    # extra sources in ND_OVERRIDES order, which is also the order they commit
+    # in. Every one of them is checked here, before any scan or copy: a
+    # detached HEAD in the second repo must not be discovered after the first
+    # has already been written to.
+    repos=()
+    repo_branches=()
+    for r in "$flake" "''${ovr_checkouts[@]}"; do
+      seen=""
+      for q in "''${repos[@]}"; do
+        if [ "$q" = "$r" ]; then
+          seen=1
+        fi
+      done
+      if [ -n "$seen" ]; then
+        continue
+      fi
+      if ! printf '%s' "$resolved" | cut -f3 | grep -qxF -e "$r"; then
+        continue
+      fi
+      if [ "$r" = "$flake" ]; then
+        repo_branches+=("$branch")
+      else
+        repo="$r"
+        check_repo
+        repo_branches+=("$repo_branch")
+      fi
+      repos+=("$r")
+    done
+    repo="$flake"
+
     # Scan BEFORE copying. Applications write credentials into their own config
     # as a matter of course, and the flake repo may be shared. Copying first and
     # refusing afterwards would leave the secret in the working tree for someone
@@ -303,19 +398,25 @@ writeShellApplication {
     # in a commit. Reaching this state takes a deliberate `git add` on a repo
     # copy the application then rewrote live, so it is rare — and it is silent,
     # which is what makes it worth a refusal rather than a comment.
+    #
+    # It runs across every repo before anything is copied into any of them, so
+    # a blocker in one repo leaves all of them untouched rather than one
+    # written and another refused. A blocker is named by the repo path as
+    # nd-status gave it: relative for the default flake, absolute for an extra
+    # source, where a bare relative path would not say which repo it is in.
     blockers=""
-    while IFS="$tab" read -r kind dest repo_rel; do
+    while IFS="$tab" read -r kind dest repo rel repo_rel; do
       if [ -z "''${dest:-}" ]; then
         continue
       fi
-      if ! nd_git diff --cached --quiet -- "$repo_rel"; then
+      if ! nd_git diff --cached --quiet -- "$rel"; then
         blockers="$blockers$repo_rel (staged content this capture would replace)
     "
         continue
       fi
       case "$kind" in
         new)
-          if [ -e "$flake/$repo_rel" ]; then
+          if [ -e "$repo/$rel" ]; then
             blockers="$blockers$repo_rel (already in the repo, never placed)
     "
           fi
@@ -334,11 +435,11 @@ writeShellApplication {
             # of a file record, so an empty $src means the manifest disagrees
             # with itself; and "I cannot tell what was placed here" is not a
             # reason to overwrite a file, it is the reason not to.
-            if [ -e "$flake/$repo_rel" ]; then
+            if [ -e "$repo/$rel" ]; then
               blockers="$blockers$repo_rel (cannot tell what was placed here)
     "
             fi
-          elif [ -e "$flake/$repo_rel" ]; then
+          elif [ -e "$repo/$rel" ]; then
             # cmp exits 1 for "they differ" and 2 for "I could not read one of
             # them" — a store source that has gone away, or a repo path that is
             # a directory or unreadable. Conflating them refused with the wrong
@@ -354,7 +455,7 @@ writeShellApplication {
             # unanswered question is how that work is lost. --force still
             # overrides, as it does for every other blocker.
             cmp_st=0
-            cmp -s "$src" "$flake/$repo_rel" || cmp_st=$?
+            cmp -s "$src" "$repo/$rel" || cmp_st=$?
             case "$cmp_st" in
               0) ;;
               1)
@@ -369,7 +470,8 @@ writeShellApplication {
           fi
           ;;
       esac
-    done < <(printf '%s\n' "$candidates")
+    done < <(printf '%s' "$resolved")
+    repo="$flake"
 
     if [ -n "$blockers" ] && [ -z "$force" ]; then
       echo "nd-save: the repo carries edits that were never placed; nothing copied:" >&2
@@ -383,12 +485,11 @@ writeShellApplication {
     fi
 
     copied=""
-    paths=()
-    while IFS="$tab" read -r kind dest repo_rel; do
+    while IFS="$tab" read -r kind dest repo rel repo_rel; do
       if [ -z "''${dest:-}" ]; then
         continue
       fi
-      dir="$(dirname "$flake/$repo_rel")"
+      dir="$(dirname "$repo/$rel")"
       case "$kind" in
         new)
           # A file the application invented has no repo counterpart yet, and its
@@ -408,14 +509,14 @@ writeShellApplication {
       # modules/home-manager.nix. The executable bit is preserved from the
       # live file rather than declared, so it round-trips through git.
       if [ -x "$HOME/$dest" ]; then
-        install -m 0755 "$HOME/$dest" "$flake/$repo_rel"
+        install -m 0755 "$HOME/$dest" "$repo/$rel"
       else
-        install -m 0644 "$HOME/$dest" "$flake/$repo_rel"
+        install -m 0644 "$HOME/$dest" "$repo/$rel"
       fi
       copied="$copied$dest
     "
-      paths+=("$repo_rel")
-    done < <(printf '%s\n' "$candidates")
+    done < <(printf '%s' "$resolved")
+    repo="$flake"
 
     echo "nd-save: copied back into the repo"
     printf '%s' "$copied" | while IFS= read -r line; do
@@ -447,161 +548,260 @@ writeShellApplication {
     # know, and undo exactly those on any exit that does not commit. Exactly
     # those: resetting a path that was already tracked would silently discard
     # staging the user did themselves.
-    untracked=()
-    for p in "''${paths[@]}"; do
-      if ! nd_git ls-files --error-unmatch -- "$p" > /dev/null 2>&1; then
-        untracked+=("$p")
-      fi
-    done
-
-    unstage_captures() {
-      if [ "''${#untracked[@]}" -gt 0 ]; then
-        nd_git reset -q -- "''${untracked[@]}"
-      fi
-    }
-
-    # A snapshot of the whole index file is strictly better than the
-    # path-scoped reset wherever it is available, because it also puts back
-    # staging the user did on a *tracked* managed path — which the `git add`
-    # further down replaces, and which no reset can reconstruct. It is not
-    # always available: a repository that has never staged anything has no
-    # index file yet. So it degrades to the reset rather than depending on it.
     #
-    # `--git-path` is resolved relative to the repository, which is where every
-    # git invocation here already runs, and it honours a redirected index.
-    index_file="$(nd_git rev-parse --git-path index)"
-    case "$index_file" in
-      /*) ;;
-      *) index_file="$flake/$index_file" ;;
-    esac
+    # The whole sequence runs once per repo, and always in a subshell of its
+    # own: the EXIT trap, the index snapshot and the committed flag below all
+    # belong to one repo, and a trap or snapshot that outlived its repo would
+    # restore one repo's index from another's. The subshell is the background
+    # job at the call site rather than parentheses around the body, because a
+    # parenthesised body run in the background is two processes, and the
+    # interrupt sent to $! would kill the outer one and leave the inner one
+    # blocked at the prompt with the index unrestored. It exits 0 when it
+    # committed, 2 when the copies changed nothing in that repo, and anything
+    # else when it failed or was declined.
+    #
+    # The linter does not follow `trap on_exit EXIT` from inside a function, so
+    # it reports on_exit and the two helpers it calls as never invoked.
+    # shellcheck disable=SC2329
+    commit_repo() {
+      # Plain assignments, not `local`: the EXIT trap runs after this function
+      # has returned, when a local would already have reverted to the default
+      # flake and on_exit would inspect the wrong repo. The background job is
+      # its own process, so nothing here leaks into the caller.
+      repo="$1"
+      branch="$2"
+      shift 2
+      paths=("$@")
 
-    index_backup=""
-    if [ -f "$index_file" ]; then
-      index_backup="$(mktemp)"
-      if ! cp -p "$index_file" "$index_backup"; then
-        rm -f "$index_backup"
-        index_backup=""
-      fi
-    fi
-
-    restore_index() {
-      if [ -n "$index_backup" ]; then
-        if cp -p "$index_backup" "$index_file"; then
-          return 0
+      untracked=()
+      for p in "''${paths[@]}"; do
+        if ! nd_git ls-files --error-unmatch -- "$p" > /dev/null 2>&1; then
+          untracked+=("$p")
         fi
-        echo "nd-save: could not restore the index from $index_backup" >&2
-      fi
-      unstage_captures
-    }
+      done
 
-    # Everything below mutates the index, so every exit that is not a
-    # successful commit has to put it back — including the exits that are not
-    # an `exit` statement at all. A `read` that returns non-zero under errexit,
-    # and Ctrl-C, both left the intent-to-add entry behind, and a leftover
-    # entry is swept into the user's next `git commit -am`: defect 1's failure
-    # arriving through the door E8 did not close.
-    #
-    # SIGINT is trapped only so that the EXIT trap runs at all; bash does not
-    # run an EXIT trap when it dies of an untrapped signal.
-    #
-    # "The commit returned 0" and "nd-save recorded that it did" are not the
-    # same instant: bash runs a pending signal trap between two commands, so a
-    # Ctrl-C landing inside the commit ends the run through the trap with the
-    # commit already made. Restoring the index there would revert a capture
-    # that is in HEAD, so the flag is backed by an invariant — if HEAD moved,
-    # this run committed, whatever the flag says.
-    head_before="$(nd_git rev-parse --verify --quiet HEAD || true)"
+      unstage_captures() {
+        if [ "''${#untracked[@]}" -gt 0 ]; then
+          nd_git reset -q -- "''${untracked[@]}"
+        fi
+      }
 
-    committed=""
-    on_exit() {
-      local head_now
-      head_now="$(nd_git rev-parse --verify --quiet HEAD || true)"
-      if [ -z "$committed" ] && [ "$head_now" = "$head_before" ]; then
-        restore_index
-      fi
-      if [ -n "$index_backup" ]; then
-        rm -f "$index_backup"
-      fi
-    }
-    trap on_exit EXIT
-    trap 'exit 130' INT
-
-    nd_git add --intent-to-add -- "''${paths[@]}"
-
-    if [ -z "$(nd_git status --porcelain -- "''${paths[@]}")" ]; then
-      echo "nd-save: copies are identical to the committed versions, nothing to commit"
-      exit 0
-    fi
-
-    echo "nd-save: changes"
-    # `diff HEAD` is fatal in a repository whose first commit has not been made
-    # yet, and by this point the copies have already happened, so dying here
-    # leaves the working tree changed and says only "fatal: bad revision".
-    # Against an unborn HEAD the comparison that means the same thing is the
-    # working tree against the index, which the intent-to-add entries above
-    # make complete.
-    if nd_git rev-parse --verify --quiet HEAD > /dev/null; then
-      nd_git --no-pager diff HEAD -- "''${paths[@]}"
-    else
-      nd_git --no-pager diff -- "''${paths[@]}"
-    fi
-    echo
-
-    echo "nd-save: will commit to branch '$branch'"
-
-    if [ -z "$assume_yes" ]; then
-      printf "nd-save: proceed? [y/N] "
-      # `read` returns non-zero when the input ends without a newline, and
-      # under errexit that killed the script before this `case` could run. An
-      # answer that never got terminated is not an answer either way, so it
-      # takes the default, which is no: consenting to a commit is worth a
-      # newline, and the unattended cases — closed stdin, a dead pipe — must
-      # not read as consent.
-      if ! read -r reply; then
-        reply=""
-        echo
-      fi
-      case "$reply" in
-        y | Y) ;;
-        *)
-          # No line of this may begin "nd-save: committed": `grep nd-save:
-          # committed` is the obvious way to ask whether a run succeeded, and
-          # the earlier wording wrapped onto exactly that.
-          echo "nd-save: aborted, nothing was committed."
-          echo "nd-save: the files are copied into the repo working tree, and the"
-          echo "nd-save: index is as you left it."
-          exit 1
-          ;;
+      # A snapshot of the whole index file is strictly better than the
+      # path-scoped reset wherever it is available, because it also puts back
+      # staging the user did on a *tracked* managed path — which the `git add`
+      # further down replaces, and which no reset can reconstruct. It is not
+      # always available: a repository that has never staged anything has no
+      # index file yet. So it degrades to the reset rather than depending on it.
+      #
+      # `--git-path` is resolved relative to the repository, which is where every
+      # git invocation here already runs, and it honours a redirected index.
+      index_file="$(nd_git rev-parse --git-path index)"
+      case "$index_file" in
+        /*) ;;
+        *) index_file="$repo/$index_file" ;;
       esac
-    fi
+
+      index_backup=""
+      if [ -f "$index_file" ]; then
+        index_backup="$(mktemp)"
+        if ! cp -p "$index_file" "$index_backup"; then
+          rm -f "$index_backup"
+          index_backup=""
+        fi
+      fi
+
+      restore_index() {
+        if [ -n "$index_backup" ]; then
+          if cp -p "$index_backup" "$index_file"; then
+            return 0
+          fi
+          echo "nd-save: could not restore the index from $index_backup" >&2
+        fi
+        unstage_captures
+      }
+
+      # Everything below mutates the index, so every exit that is not a
+      # successful commit has to put it back — including the exits that are not
+      # an `exit` statement at all. A `read` that returns non-zero under errexit,
+      # and Ctrl-C, both left the intent-to-add entry behind, and a leftover
+      # entry is swept into the user's next `git commit -am`: defect 1's failure
+      # arriving through the door E8 did not close.
+      #
+      # SIGINT is trapped only so that the EXIT trap runs at all; bash does not
+      # run an EXIT trap when it dies of an untrapped signal. SIGTERM is how an
+      # interrupt reaches this subshell at all — see the call site below.
+      #
+      # "The commit returned 0" and "nd-save recorded that it did" are not the
+      # same instant: bash runs a pending signal trap between two commands, so a
+      # Ctrl-C landing inside the commit ends the run through the trap with the
+      # commit already made. Restoring the index there would revert a capture
+      # that is in HEAD, so the flag is backed by an invariant — if HEAD moved,
+      # this run committed, whatever the flag says.
+      head_before="$(nd_git rev-parse --verify --quiet HEAD || true)"
+
+      committed=""
+      on_exit() {
+        local head_now
+        head_now="$(nd_git rev-parse --verify --quiet HEAD || true)"
+        if [ -z "$committed" ] && [ "$head_now" = "$head_before" ]; then
+          restore_index
+        fi
+        if [ -n "$index_backup" ]; then
+          rm -f "$index_backup"
+        fi
+      }
+      trap on_exit EXIT
+      trap 'exit 130' INT TERM
+
+      nd_git add --intent-to-add -- "''${paths[@]}"
+
+      if [ -z "$(nd_git status --porcelain -- "''${paths[@]}")" ]; then
+        echo "nd-save: copies are identical to the committed versions, nothing to commit"
+        exit 2
+      fi
+
+      echo "nd-save: changes"
+      # `diff HEAD` is fatal in a repository whose first commit has not been made
+      # yet, and by this point the copies have already happened, so dying here
+      # leaves the working tree changed and says only "fatal: bad revision".
+      # Against an unborn HEAD the comparison that means the same thing is the
+      # working tree against the index, which the intent-to-add entries above
+      # make complete.
+      if nd_git rev-parse --verify --quiet HEAD > /dev/null; then
+        nd_git --no-pager diff HEAD -- "''${paths[@]}"
+      else
+        nd_git --no-pager diff -- "''${paths[@]}"
+      fi
+      echo
+
+      if [ "$repo" = "$flake" ]; then
+        echo "nd-save: will commit to branch '$branch'"
+      else
+        echo "nd-save: will commit to branch '$branch' in $repo"
+      fi
+
+      if [ -z "$assume_yes" ]; then
+        printf "nd-save: proceed? [y/N] "
+        # `read` returns non-zero when the input ends without a newline, and
+        # under errexit that killed the script before this `case` could run. An
+        # answer that never got terminated is not an answer either way, so it
+        # takes the default, which is no: consenting to a commit is worth a
+        # newline, and the unattended cases — closed stdin, a dead pipe — must
+        # not read as consent.
+        if ! read -r reply; then
+          reply=""
+          echo
+        fi
+        case "$reply" in
+          y | Y) ;;
+          *)
+            # No line of this may begin "nd-save: committed": `grep nd-save:
+            # committed` is the obvious way to ask whether a run succeeded, and
+            # the earlier wording wrapped onto exactly that.
+            echo "nd-save: aborted, nothing was committed."
+            echo "nd-save: the files are copied into the repo working tree, and the"
+            echo "nd-save: index is as you left it."
+            exit 1
+            ;;
+        esac
+      fi
+
+      nd_git add -- "''${paths[@]}"
+
+      # A commit can fail for reasons that have nothing to do with nd-save: a
+      # pre-commit hook that rejects the content, commit.gpgsign with no key, a
+      # full disk. Under errexit that was a silent exit with the capture left
+      # fully staged — exactly the state a later `git commit -am` sweeps up. git
+      # has already said why on stderr; this says what it means for the repo.
+      if ! nd_git commit --only -m "$msg" -- "''${paths[@]}"; then
+        echo "nd-save: the commit failed, so nothing was committed." >&2
+        echo "nd-save: the files are still copied into the repo working tree." >&2
+        if [ -n "$index_backup" ]; then
+          echo "nd-save: the index is put back to what it was before this run." >&2
+        else
+          # No snapshot could be taken, so the tracked paths cannot be undone:
+          # `git add` replaced whatever was staged on them and only the user
+          # knows what that was. Name them rather than exit quietly.
+          echo "nd-save: the index could not be snapshotted, so these paths may be" >&2
+          echo "nd-save: left staged holding the captured content:" >&2
+          printf '%s\n' "''${paths[@]}" | sed 's/^/  /' >&2
+        fi
+        exit 1
+      fi
+      committed=1
+      echo "nd-save: committed. Not pushed."
+    }
 
     if [ -z "$msg" ]; then
       msg="$(derive_subject)"
     fi
 
-    nd_git add -- "''${paths[@]}"
+    # Commits go one repo at a time and are never undone: a commit is the
+    # user's to keep or revert, and an automatic revert in one repo because a
+    # hook refused another would be a second surprise on top of the first. So
+    # a failure after an earlier commit names every commit already made, which
+    # is what the user needs to decide that for themselves.
+    #
+    # An extra source's checkout is built through --override-input, so the
+    # commit takes effect at the next switch, but the flake lock still points
+    # at the old revision and every other machine builds from the lock. That
+    # is the step nobody remembers, so it is said here.
+    made=()
+    for i in "''${!repos[@]}"; do
+      r="''${repos[$i]}"
+      paths=()
+      while IFS="$tab" read -r _kind dest owner rel _repo_path; do
+        if [ -n "''${dest:-}" ] && [ "$owner" = "$r" ]; then
+          paths+=("$rel")
+        fi
+      done < <(printf '%s' "$resolved")
 
-    # A commit can fail for reasons that have nothing to do with nd-save: a
-    # pre-commit hook that rejects the content, commit.gpgsign with no key, a
-    # full disk. Under errexit that was a silent exit with the capture left
-    # fully staged — exactly the state a later `git commit -am` sweeps up. git
-    # has already said why on stderr; this says what it means for the repo.
-    if ! nd_git commit --only -m "$msg" -- "''${paths[@]}"; then
-      echo "nd-save: the commit failed, so nothing was committed." >&2
-      echo "nd-save: the files are still copied into the repo working tree." >&2
-      if [ -n "$index_backup" ]; then
-        echo "nd-save: the index is put back to what it was before this run." >&2
-      else
-        # No snapshot could be taken, so the tracked paths cannot be undone:
-        # `git add` replaced whatever was staged on them and only the user
-        # knows what that was. Name them rather than exit quietly.
-        echo "nd-save: the index could not be snapshotted, so these paths may be" >&2
-        echo "nd-save: left staged holding the captured content:" >&2
-        printf '%s\n' "''${paths[@]}" | sed 's/^/  /' >&2
-      fi
-      exit 1
-    fi
-    committed=1
-    echo "nd-save: committed. Not pushed."
+      # The subshell runs in the background and is waited for, rather than in
+      # the foreground, because an interrupt has to reach it. Bash defers a
+      # trap until the foreground command finishes, so a SIGINT sent to
+      # nd-save alone — not to its process group — sat in the parent while the
+      # subshell blocked at the prompt forever; `wait` is interruptible. A
+      # background job ignores SIGINT and cannot trap it, so the interrupt is
+      # passed on as SIGTERM, which it traps the same way. The explicit
+      # stdin keeps the prompt reading the terminal: a background job's stdin
+      # is otherwise /dev/null. Running it in the background also keeps errexit
+      # in force inside it, where `commit_repo || rc=$?` would have switched it
+      # off for every step.
+      commit_repo "$r" "''${repo_branches[$i]}" "''${paths[@]}" <&0 &
+      child=$!
+      interrupted=""
+      trap 'interrupted=1; kill -TERM "$child" 2> /dev/null || true' INT
+      rc=0
+      wait "$child" || rc=$?
+      while [ -n "$interrupted" ]; do
+        interrupted=""
+        rc=0
+        wait "$child" || rc=$?
+      done
+      trap - INT
+
+      case "$rc" in
+        0)
+          repo="$r"
+          made+=("$r ($(nd_git rev-parse --short HEAD))")
+          repo="$flake"
+          if [ "$r" != "$flake" ]; then
+            for j in "''${!ovr_checkouts[@]}"; do
+              if [ "''${ovr_checkouts[$j]}" = "$r" ]; then
+                echo "nd-save: $r has a commit the flake lock does not — push it, then: nix flake update ''${ovr_inputs[$j]}"
+                break
+              fi
+            done
+          fi
+          ;;
+        2) ;;
+        *)
+          for m in "''${made[@]}"; do
+            echo "nd-save: committed in $m" >&2
+          done
+          exit "$rc"
+          ;;
+      esac
+    done
   '';
 }

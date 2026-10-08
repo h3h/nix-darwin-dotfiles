@@ -70,6 +70,10 @@ check_status() { # check_status <name> <expected> <actual>
   if [ "$2" = "$3" ]; then ok "$1"; else no "$1" "wanted exit $2, got $3"; fi
 }
 
+check_absent() { # check_absent <name> <path>
+  if [ -e "$2" ] || [ -L "$2" ]; then no "$1" "wanted no file at $2"; else ok "$1"; fi
+}
+
 # A fixture is a $HOME with one managed file, a manifest, and a git repo acting
 # as the flake. Returns the directory on stdout.
 new_fixture() {
@@ -1897,6 +1901,82 @@ check_not "a missing checkout passes no override" "--override-input" "$out"
 # Rollback never builds, so it never overrides.
 out=$(HOME="$d/home" ND_FLAKE="$d/repo" ND_OVERRIDES="$ovr" PATH="$stub_bin:$PATH" "$ND_SWITCH" --rollback 2>&1)
 check_not "a rollback passes no override" "--override-input" "$out"
+rm -rf "$d"
+
+echo "multiple sources: nd-save"
+
+run_save_multi() { # run_save_multi <fixture> [args...]
+  HOME="$1/home" ND_FLAKE="$1/repo" ND_OVERRIDES="$(printf 'dotfiles\t%s' "$1/shared")" \
+    "$ND_SAVE" "${@:2}" 2>&1
+}
+
+# Drift in both repos: two commits, one per repo, same subject.
+d=$(new_multi_fixture)
+printf 'version = 4\n' > "$d/home/.posh.toml"
+printf '# w2\n' > "$d/home/.claude/skills/work/W.md"
+out=$(run_save_multi "$d" -y); st=$?
+check_status "a two-repo save succeeds" 0 "$st"
+check_eq "the shared repo got the capture" "version = 4" "$(cat "$d/shared/files/posh.toml")"
+check_eq "the default repo got the capture" "# w2" "$(cat "$d/repo/files/work/W.md")"
+check_eq "the shared repo has one new commit" "2" "$(git -C "$d/shared" rev-list --count HEAD)"
+check_eq "the default repo has one new commit" "2" "$(git -C "$d/repo" rev-list --count HEAD)"
+check_eq "both commits share a subject" \
+  "$(git -C "$d/repo" log -1 --format=%s)" "$(git -C "$d/shared" log -1 --format=%s)"
+check "the push reminder names the input" "nix flake update dotfiles" "$out"
+check_eq "the shared commit touches only the capture" "files/posh.toml" \
+  "$(git -C "$d/shared" show --name-only --format= HEAD)"
+rm -rf "$d"
+
+# A new file under the deeper root lands in the default repo.
+d=$(new_multi_fixture)
+printf '# n\n' > "$d/home/.claude/skills/work/N.md"
+out=$(run_save_multi "$d" -y); st=$?
+check_status "a nested-root capture succeeds" 0 "$st"
+check_eq "it lands in the deeper root's repo" "# n" "$(cat "$d/repo/files/work/N.md")"
+check_absent "and not in the shallower root's repo" "$d/shared/files/skills/work/N.md"
+rm -rf "$d"
+
+# A blocker in one repo aborts both, with neither touched.
+d=$(new_multi_fixture)
+printf 'version = 4\n' > "$d/home/.posh.toml"
+printf '# w2\n' > "$d/home/.claude/skills/work/W.md"
+printf 'version = 9\n' > "$d/shared/files/posh.toml"   # an edit never placed
+out=$(run_save_multi "$d" -y); st=$?
+check_status "a blocker in one repo fails the run" 1 "$st"
+check "the blocker is named" "repo copy differs from what was placed" "$out"
+check_eq "the default repo is untouched" "# w" "$(cat "$d/repo/files/work/W.md")"
+check_eq "the default repo has no new commit" "1" "$(git -C "$d/repo" rev-list --count HEAD)"
+rm -rf "$d"
+
+# Detached HEAD in the extra repo is refused before any copy.
+d=$(new_multi_fixture)
+printf 'version = 4\n' > "$d/home/.posh.toml"
+git -C "$d/shared" checkout -q --detach
+out=$(run_save_multi "$d" -y); st=$?
+check_status "a detached extra repo is refused" 1 "$st"
+check "the detached repo is named" "HEAD is detached in $d/shared" "$out"
+check_eq "nothing was copied" "version = 3" "$(cat "$d/shared/files/posh.toml")"
+rm -rf "$d"
+
+# A repo path no source claims fails closed.
+d=$(new_multi_fixture)
+printf 'version = 4\n' > "$d/home/.posh.toml"
+out=$(HOME="$d/home" ND_FLAKE="$d/repo" "$ND_SAVE" -y 2>&1); st=$?
+check_status "an unknown repo fails" 1 "$st"
+check "it says why" "outside every known repo" "$out"
+rm -rf "$d"
+
+# The second repo's commit failing after the first committed is reported.
+d=$(new_multi_fixture)
+printf 'version = 4\n' > "$d/home/.posh.toml"
+printf '# w2\n' > "$d/home/.claude/skills/work/W.md"
+mkdir -p "$d/shared/.git/hooks"
+printf '#!/bin/sh\nexit 1\n' > "$d/shared/.git/hooks/pre-commit"
+chmod +x "$d/shared/.git/hooks/pre-commit"
+out=$(run_save_multi "$d" -y); st=$?
+check_status "a partial save fails" 1 "$st"
+check "the earlier commit is named" "committed in $d/repo" "$out"
+check_eq "the shared index is put back" "" "$(git -C "$d/shared" diff --cached --name-only)"
 rm -rf "$d"
 
 echo
