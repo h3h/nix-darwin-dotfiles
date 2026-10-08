@@ -389,6 +389,23 @@ out=$(HOME="$h" "$ND_STATUS_BIN" 2>&1)
 check "a deleted declared file is missing" \
   "missing${tab}.config/app/config.toml${tab}files/app/config.toml" "$out"
 
+# The same round trip with an extra source. Its repo paths are under /opt and
+# cannot be created in the sandbox, so this covers placement and classification
+# only: every placed file matches its store source, the extra source's absolute
+# repo paths parse, and the glob roots of the two sources do not double-report.
+# ND_FLAKE points at an empty directory because nothing here needs a git repo.
+h="$tmp/rt-multi"
+mkdir -p "$h" "$tmp/rt-multi-flake"
+activate "$ND_ACTIVATION_MULTI" "$h" > /dev/null
+
+out=$(HOME="$h" ND_FLAKE="$tmp/rt-multi-flake" "$ND_STATUS_BIN" 2>&1)
+check_empty "a freshly activated multi-source home is clean" "$out"
+
+printf 'version = 99\n' > "$h/.posh.toml"
+out=$(HOME="$h" ND_FLAKE="$tmp/rt-multi-flake" "$ND_STATUS_BIN" 2>&1)
+check_eq "drift in an extra source's file names its absolute repo path" \
+  "drifted${tab}.posh.toml${tab}/opt/checkouts/dotfiles/alice/files/posh.toml" "$out"
+
 echo
 echo "captured (round trip)"
 
