@@ -57,6 +57,15 @@ check_empty() { # check_empty <name> <actual>
   if [ -z "$2" ]; then ok "$1"; else no "$1" "wanted empty, got: $2"; fi
 }
 
+check_eq() { # check_eq <name> <expected> <actual>
+  if [ "$2" = "$3" ]; then
+    ok "$1"
+  else
+    no "$1" "wanted: $(printf '%s' "$2" | tr '\n\t' '|>')
+       got:    $(printf '%s' "$3" | tr '\n\t' '|>')"
+  fi
+}
+
 check_status() { # check_status <name> <expected> <actual>
   if [ "$2" = "$3" ]; then ok "$1"; else no "$1" "wanted exit $2, got $3"; fi
 }
@@ -127,6 +136,49 @@ new_glob_fixture() {
 }
 
 drift() { printf 'setting = 2\n' > "$1/home/.config/app/config.toml"; }
+
+# Two repos: the default flake ($d/repo) and an extra source checkout
+# ($d/shared). The shared source owns .posh.toml and the glob root
+# .claude/skills; the default source owns the deeper root .claude/skills/work.
+# Extra-source records carry absolute repo paths, as the module writes them.
+new_multi_fixture() {
+  local d
+  d="$(mktemp -d)"
+  mkdir -p "$d/home/.local/state/nd" "$d/home/.claude/skills/one" "$d/home/.claude/skills/work" \
+           "$d/repo/files/work" "$d/shared/files/skills/one" "$d/store"
+
+  printf 'version = 3\n' > "$d/store/posh.toml"
+  printf '# one\n' > "$d/store/one.md"
+  printf '# w\n' > "$d/store/w.md"
+  chmod 0444 "$d/store/posh.toml" "$d/store/one.md" "$d/store/w.md"
+
+  install -m 0644 "$d/store/posh.toml" "$d/home/.posh.toml"
+  install -m 0644 "$d/store/one.md"    "$d/home/.claude/skills/one/SKILL.md"
+  install -m 0644 "$d/store/w.md"      "$d/home/.claude/skills/work/W.md"
+  install -m 0644 "$d/store/posh.toml" "$d/shared/files/posh.toml"
+  install -m 0644 "$d/store/one.md"    "$d/shared/files/skills/one/SKILL.md"
+  install -m 0644 "$d/store/w.md"      "$d/repo/files/work/W.md"
+  printf '{}\n' > "$d/repo/flake.nix"
+  printf '{}\n' > "$d/shared/flake.nix"
+
+  {
+    printf '%s\t%s\t%s\n' "$d/store/w.md"      ".claude/skills/work/W.md"       "files/work/W.md"
+    printf '%s\t%s\t%s\n' "$d/store/posh.toml" ".posh.toml"                     "$d/shared/files/posh.toml"
+    printf '%s\t%s\t%s\n' "$d/store/one.md"    ".claude/skills/one/SKILL.md"    "$d/shared/files/skills/one/SKILL.md"
+    printf '%s\t%s\t%s\t%s\t%s\n' "-" ".claude/skills/work" "files/work" "glob" '[^/]*\.md'
+    printf '%s\t%s\t%s\t%s\t%s\n' "-" ".claude/skills" "$d/shared/files/skills" "glob" '[^/]*/[^/]*\.md'
+  } > "$d/home/.local/state/nd/manifest"
+
+  local r
+  for r in repo shared; do
+    git -C "$d/$r" init -q -b main
+    git -C "$d/$r" config user.email t@example.com
+    git -C "$d/$r" config user.name Test
+    git -C "$d/$r" add -A
+    git -C "$d/$r" commit -qm initial
+  done
+  printf '%s' "$d"
+}
 
 # nd-switch's rollback path ends in `sudo darwin-rebuild`, which the suite
 # neither can nor should run. A stub `sudo` that only echoes stands in; the real
@@ -1758,6 +1810,41 @@ printf '%s\t%s\t%s\n' "$d/store-source-2" ".config/app/config.toml" "files/confi
   > "$d/home/.local/state/nd/manifest"
 out=$(run_status "$d")
 check_empty "after the switch nothing is reported at all" "$out"
+rm -rf "$d"
+
+echo "multiple sources: nd-status"
+d=$(new_multi_fixture)
+out=$(run_status "$d")
+check_empty "a clean two-source tree reports nothing" "$out"
+
+printf 'version = 4\n' > "$d/home/.posh.toml"
+out=$(run_status "$d")
+check "an extra source's drift is reported with its absolute repo path" \
+  "drifted	.posh.toml	$d/shared/files/posh.toml" "$out"
+
+# Captured is decided in the repo that holds the file, not in ND_FLAKE.
+printf 'version = 4\n' > "$d/shared/files/posh.toml"
+out=$(run_status "$d")
+check "an extra source's capture is decided in its own repo" \
+  "captured	.posh.toml	$d/shared/files/posh.toml" "$out"
+rm -rf "$d"
+
+# The deepest root owns its subtree: a new file under .claude/skills/work
+# matches both roots' patterns but is reported once, against the default repo.
+d=$(new_multi_fixture)
+printf '# n\n' > "$d/home/.claude/skills/work/N.md"
+out=$(run_status "$d")
+check "a new file under nested roots is reported against the deeper root" \
+  "new	.claude/skills/work/N.md	files/work/N.md" "$out"
+check_eq "and only once" "1" "$(printf '%s\n' "$out" | grep -c 'N.md')"
+check_not "and never against the shallower root" "$d/shared/files/skills/work/N.md" "$out"
+
+# A new file elsewhere under the shallower root still belongs to it.
+mkdir -p "$d/home/.claude/skills/two"
+printf '# t\n' > "$d/home/.claude/skills/two/SKILL.md"
+out=$(run_status "$d")
+check "a new file outside the deeper root belongs to the shallower one" \
+  "new	.claude/skills/two/SKILL.md	$d/shared/files/skills/two/SKILL.md" "$out"
 rm -rf "$d"
 
 echo
