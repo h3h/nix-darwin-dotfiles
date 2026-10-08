@@ -172,15 +172,94 @@ let
   # listFilesRecursive walks in name order, so exec.lua (added to prove the
   # executable bit survives placement through a glob match) sorts before
   # init.lua.
-  expectedManifest =
+  #
+  # Split in two so the multi-source manifest below can put an extra source's
+  # file records between them: every file record precedes every glob record.
+  expectedManifestFiles =
     "${src "app/config.toml"}\t.config/app/config.toml\tfiles/app/config.toml\n"
     + "${src "nv/exec.lua"}\t.config/nv/exec.lua\tfiles/nv/exec.lua\n"
     + "${src "nv/init.lua"}\t.config/nv/init.lua\tfiles/nv/init.lua\n"
-    + "${src "nv/lua/plug.lua"}\t.config/nv/lua/plug.lua\tfiles/nv/lua/plug.lua\n"
-    + "-\t.config/nv\tfiles/nv\tglob\t(.*/)?[^/]*\\.lua\n"
+    + "${src "nv/lua/plug.lua"}\t.config/nv/lua/plug.lua\tfiles/nv/lua/plug.lua\n";
+
+  expectedManifestGlobs =
+    "-\t.config/nv\tfiles/nv\tglob\t(.*/)?[^/]*\\.lua\n"
     + "-\t.config/nv\tfiles/nv\tglob\tlazy-lock\\.json\n";
 
+  expectedManifest = expectedManifestFiles + expectedManifestGlobs;
+
   expectedSparseManifest = "-\t.config/nv\tfiles/nv\tglob\tlazy-lock\\.json\n";
+
+  # A second source, standing in for a shared module from another repo. Its
+  # repo paths are absolute, because the tools have no other way to find the
+  # checkout it lives in.
+  sharedDir = ./fixtures/shared;
+
+  shared = {
+    input = "dotfiles";
+    checkout = "/opt/checkouts/dotfiles";
+    sourceDir = sharedDir;
+    repoSubdir = "alice/files";
+    files.".posh.toml" = "posh.toml";
+    globs.".config/kit" = {
+      source = "kit";
+      patterns = [ "*.md" ];
+    };
+  };
+
+  multi = evalND (base // { sources.shared = shared; });
+
+  # The same destination from two sources fails evaluation and names both.
+  collision = evalND (
+    base
+    // {
+      sources.shared = shared // {
+        files.".config/app/config.toml" = "posh.toml";
+      };
+    }
+  );
+
+  # A glob root claimed by two sources fails the same way.
+  rootCollision = evalND (
+    base
+    // {
+      sources.shared = shared // {
+        globs.".config/nv" = {
+          source = "kit";
+          patterns = [ "*.md" ];
+        };
+      };
+    }
+  );
+
+  # null opts a destination out of one source so another can claim it.
+  optOut = evalND (
+    base
+    // {
+      files.".config/app/config.toml" = null;
+      sources.shared = shared // {
+        files.".config/app/config.toml" = "posh.toml";
+      };
+    }
+  );
+
+  badSource = evalND (
+    base
+    // {
+      sources.shared = shared // {
+        input = "";
+        checkout = "relative/dotfiles/";
+      };
+    }
+  );
+
+  sharedSrc = rel: "${sharedDir + "/${rel}"}";
+
+  expectedMultiManifest =
+    expectedManifestFiles
+    + "${sharedSrc "posh.toml"}\t.posh.toml\t/opt/checkouts/dotfiles/alice/files/posh.toml\n"
+    + "${sharedSrc "kit/a.md"}\t.config/kit/a.md\t/opt/checkouts/dotfiles/alice/files/kit/a.md\n"
+    + expectedManifestGlobs
+    + "-\t.config/kit\t/opt/checkouts/dotfiles/alice/files/kit\tglob\t[^/]*\\.md\n";
 
   activationOf = c: pkgs.writeText "nd-activation" c.home.activation.ndPlaceManagedConfigs.data;
 
@@ -225,6 +304,17 @@ in
   wrapStatus = wrapperOf main "nd-status";
   wrapNoBranchSave = wrapperOf noBranch "nd-save";
   wrapNoHostSwitch = wrapperOf noHost "nd-switch";
+
+  activationMulti = activationOf multi;
+  expectedMultiManifest = pkgs.writeText "nd-expected-multi-manifest" expectedMultiManifest;
+  multiAssertionFailures = pkgs.writeText "nd-multi-assertion-failures" (failingMessages multi);
+  collisionFailures = pkgs.writeText "nd-collision-failures" (failingMessages collision);
+  rootCollisionFailures = pkgs.writeText "nd-root-collision-failures" (failingMessages rootCollision);
+  optOutFailures = pkgs.writeText "nd-optout-failures" (failingMessages optOut);
+  activationOptOut = activationOf optOut;
+  badSourceFailures = pkgs.writeText "nd-bad-source-failures" (failingMessages badSource);
+  wrapMultiSwitch = wrapperOf multi "nd-switch";
+  wrapMultiSave = wrapperOf multi "nd-save";
 
   homeDirectory = homeDir;
   flakePath = base.flakePath;

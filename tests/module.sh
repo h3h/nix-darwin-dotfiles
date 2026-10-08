@@ -19,6 +19,10 @@ for v in ND_ACTIVATION ND_ACTIVATION_SPARSE ND_ACTIVATION_AFTER \
   ND_PACKAGE_NAMES ND_ASSERTION_FAILURES ND_BAD_ASSERTION_FAILURES \
   ND_WRAP_SWITCH ND_WRAP_SAVE ND_WRAP_STATUS ND_WRAP_NOBRANCH_SAVE \
   ND_WRAP_NOHOST_SWITCH \
+  ND_ACTIVATION_MULTI ND_EXPECTED_MULTI_MANIFEST ND_MULTI_ASSERTION_FAILURES \
+  ND_COLLISION_FAILURES ND_ROOT_COLLISION_FAILURES ND_OPTOUT_FAILURES \
+  ND_ACTIVATION_OPTOUT ND_BAD_SOURCE_FAILURES ND_WRAP_MULTI_SWITCH \
+  ND_WRAP_MULTI_SAVE \
   ND_STATUS_BIN ND_HOME_DIRECTORY ND_FLAKE_PATH ND_EXPECTED_BRANCH_VALUE \
   ND_MANIFEST_PATH ND_HOST_VALUE; do
   if [ -z "${!v:-}" ]; then
@@ -28,10 +32,10 @@ for v in ND_ACTIVATION ND_ACTIVATION_SPARSE ND_ACTIVATION_AFTER \
 done
 
 # The wrapper cases assert on what --set-default does with an inherited value,
-# so the four variables must start out genuinely unset. ND_HOST matters most
+# so these variables must start out genuinely unset. ND_HOST matters most
 # here: a developer running this suite on their own machine may well have it
 # exported for real.
-unset ND_FLAKE ND_MANIFEST ND_EXPECTED_BRANCH ND_HOST
+unset ND_FLAKE ND_MANIFEST ND_EXPECTED_BRANCH ND_HOST ND_OVERRIDES
 
 pass=0
 fail=0
@@ -306,6 +310,46 @@ check_eq "and the flag after it survives" "$ND_EXPECTED_BRANCH_VALUE" \
 # case goes the whole way: nd-status names the manifest it was told to read.
 out=$(HOME="$tmp/nowhere" "$ND_WRAP_STATUS" 2>&1)
 check "the value reaches the program" "no manifest at $ND_HOME_DIRECTORY/$ND_MANIFEST_PATH" "$out"
+
+echo
+echo "multiple sources"
+
+# A second source's records carry an absolute repo path in field 3, and follow
+# the default source's within each record kind. Byte-for-byte, as above.
+h="$tmp/multi-home"
+mkdir -p "$h"
+activate "$ND_ACTIVATION_MULTI" "$h" > /dev/null
+check_file_eq "the multi-source manifest matches the contract" \
+  "$ND_EXPECTED_MULTI_MANIFEST" "$h/$ND_MANIFEST_PATH"
+check_file_eq "an extra source raises no assertions" /dev/null "$ND_MULTI_ASSERTION_FAILURES"
+check "an extra source's file is placed" "version = 3" "$(cat "$h/.posh.toml")"
+check "an extra source's glob match is placed" "# a" "$(cat "$h/.config/kit/a.md")"
+check_absent "an extra source's non-matching file is not placed" "$h/.config/kit/skip.txt"
+
+c="$(cat "$ND_COLLISION_FAILURES")"
+check "a destination claimed twice fails" ".config/app/config.toml" "$c"
+check "the collision names the default source" "default" "$c"
+check "the collision names the extra source" "shared" "$c"
+
+r="$(cat "$ND_ROOT_COLLISION_FAILURES")"
+check "a glob root claimed twice fails" ".config/nv" "$r"
+check "the root collision names the extra source" "shared" "$r"
+
+check_file_eq "null opts a destination out" /dev/null "$ND_OPTOUT_FAILURES"
+h="$tmp/optout-home"
+mkdir -p "$h"
+activate "$ND_ACTIVATION_OPTOUT" "$h" > /dev/null
+check "the opted-in source places the file" "version = 3" "$(cat "$h/.config/app/config.toml")"
+
+b="$(cat "$ND_BAD_SOURCE_FAILURES")"
+check "an empty input fails" "programs.nd.sources.shared.input" "$b"
+check "a relative checkout fails" "programs.nd.sources.shared.checkout" "$b"
+
+check_eq "ND_OVERRIDES carries input and checkout" \
+  "dotfiles${tab}/opt/checkouts/dotfiles" "$(probe "$ND_WRAP_MULTI_SWITCH" ND_OVERRIDES | sed '/^$/d')"
+check_eq "nd-save gets ND_OVERRIDES too" \
+  "dotfiles${tab}/opt/checkouts/dotfiles" "$(probe "$ND_WRAP_MULTI_SAVE" ND_OVERRIDES | sed '/^$/d')"
+check_eq "no extra sources leaves ND_OVERRIDES unset" "NOTSET" "$(probe "$ND_WRAP_SWITCH" ND_OVERRIDES)"
 
 echo
 echo "round trip"
