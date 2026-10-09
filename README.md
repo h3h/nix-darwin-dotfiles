@@ -376,7 +376,7 @@ $ nix flake check          # runs the suite in a sandbox
 $ bash tests/run.sh        # or directly
 ```
 
-210 cases covering argument parsing; drift, missing, new and unreadable
+362 cases covering argument parsing; drift, missing, new and unreadable
 classification; the gate, its two overrides and what they say they will discard;
 flag ordering; copy-back; commit scoping and contents; the branch guard and
 detached HEAD; the unplaced-repo-edit and staged-content refusals and `--force`;
