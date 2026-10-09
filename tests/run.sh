@@ -359,12 +359,19 @@ rm -rf "$d"
 
 # The bottom row of the precedence table: no ND_HOST and no option means the
 # short hostname, which is the behaviour every pre-existing configuration
-# depends on. Both sides call the same /bin/hostname -s in the same
-# environment, so this compares nd-switch's resolution against its own source
-# of truth rather than against a hardcoded name.
+# depends on. Both sides resolve it the same way in the same environment —
+# /bin/hostname -s where it exists, as on macOS, and the short `uname -n`
+# elsewhere — so this compares nd-switch's resolution against its own source of
+# truth rather than against a hardcoded name.
+if [ -x /bin/hostname ]; then
+  short_host="$(/bin/hostname -s)"
+else
+  short_host="$(uname -n)"
+  short_host="${short_host%%.*}"
+fi
 d=$(new_fixture)
 out=$(HOME="$d/home" ND_FLAKE="$d/repo" "$ND_SWITCH" --build 2>&1)
-check "no ND_HOST falls back to the short hostname" "building $(/bin/hostname -s) from" "$out"
+check "no ND_HOST falls back to the short hostname" "building $short_host from" "$out"
 rm -rf "$d"
 
 # Captured content does not block. The new generation builds this file from the

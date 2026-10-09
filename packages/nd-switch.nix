@@ -23,7 +23,18 @@ writeShellApplication {
   ];
   text = ''
     flake="''${ND_FLAKE:-$HOME/.config/nix-darwin}"
-    host="''${ND_HOST:-$(/bin/hostname -s)}"
+    # /bin/hostname is macOS's, and its -s is what the nd-host-option design
+    # chose. A Linux build sandbox has no /bin/hostname at all, so the bare call
+    # failed before argument parsing and took even --help down with it.
+    # `uname -n` (coreutils, so always on PATH here) with the domain cut off is
+    # the same short name.
+    if [ -x /bin/hostname ]; then
+      default_host="$(/bin/hostname -s)"
+    else
+      default_host="$(uname -n)"
+      default_host="''${default_host%%.*}"
+    fi
+    host="''${ND_HOST:-$default_host}"
     manifest="''${ND_MANIFEST:-$HOME/.local/state/nd/manifest}"
     build_only=""
     allow_dirty=""
@@ -31,9 +42,23 @@ writeShellApplication {
     steps=1
     tab="$(printf '\t')"
 
+    # Both of these read the system profile, which a build sandbox (and a
+    # machine whose system profile lives elsewhere) does not have. Under
+    # errexit and pipefail a missing directory killed the script in the middle
+    # of a switch that had already built, so an absent profile now reads as "no
+    # generations": the printed rollback hint is skipped and a numbered
+    # rollback says there is nothing to go back to.
     gens() {
+      if [ ! -d /nix/var/nix/profiles ]; then
+        return 0
+      fi
       find /nix/var/nix/profiles -maxdepth 1 -name 'system-*-link' \
         | sed 's|.*/system-\([0-9]*\)-link|\1|' | sort -n
+    }
+
+    current_gen() {
+      readlink /nix/var/nix/profiles/system 2> /dev/null \
+        | sed 's|system-\([0-9]*\)-link|\1|' || true
     }
 
     # Parsed as a loop so flags work in any order.
@@ -221,7 +246,7 @@ writeShellApplication {
       # --allow-dirty as the override, is E17 and is the maintainer's call.
       report_status "--rollback"
 
-      current="$(readlink /nix/var/nix/profiles/system | sed 's|system-\([0-9]*\)-link|\1|')"
+      current="$(current_gen)"
 
       if [ "$steps" -eq 1 ]; then
         echo "nd-switch: rolling back one generation from $current"
