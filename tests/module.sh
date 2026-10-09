@@ -22,7 +22,7 @@ for v in ND_ACTIVATION ND_ACTIVATION_SPARSE ND_ACTIVATION_AFTER \
   ND_ACTIVATION_MULTI ND_EXPECTED_MULTI_MANIFEST ND_MULTI_ASSERTION_FAILURES \
   ND_COLLISION_FAILURES ND_ROOT_COLLISION_FAILURES ND_OPTOUT_FAILURES \
   ND_ACTIVATION_OPTOUT ND_BAD_SOURCE_FAILURES ND_WRAP_MULTI_SWITCH \
-  ND_WRAP_MULTI_SAVE \
+  ND_WRAP_MULTI_SAVE ND_ACTIVATION_STRING_SOURCE ND_STRING_SOURCE_FAILURES \
   ND_STATUS_BIN ND_HOME_DIRECTORY ND_FLAKE_PATH ND_EXPECTED_BRANCH_VALUE \
   ND_MANIFEST_PATH ND_HOST_VALUE; do
   if [ -z "${!v:-}" ]; then
@@ -350,6 +350,17 @@ check_eq "ND_OVERRIDES carries input and checkout" \
 check_eq "nd-save gets ND_OVERRIDES too" \
   "dotfiles${tab}/opt/checkouts/dotfiles" "$(probe "$ND_WRAP_MULTI_SAVE" ND_OVERRIDES | sed '/^$/d')"
 check_eq "no extra sources leaves ND_OVERRIDES unset" "NOTSET" "$(probe "$ND_WRAP_SWITCH" ND_OVERRIDES)"
+
+# The assertions are where destinations become attribute names, and nothing
+# else forces them — home-manager does, on every build, which is how this was
+# found. Placing from the same configuration proves the store context was kept
+# where it matters, on the source side of each record.
+check_file_eq "a string sourceDir raises no assertions" /dev/null "$ND_STRING_SOURCE_FAILURES"
+h="$tmp/string-source-home"
+mkdir -p "$h"
+activate "$ND_ACTIVATION_STRING_SOURCE" "$h" > /dev/null
+check "a string sourceDir places its file" "version = 3" "$(cat "$h/.posh.toml")"
+check "a string sourceDir places its glob match" "# a" "$(cat "$h/.config/kit/a.md")"
 
 echo
 echo "round trip"

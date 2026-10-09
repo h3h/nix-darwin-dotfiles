@@ -208,6 +208,26 @@ let
 
   multi = evalND (base // { sources.shared = shared; });
 
+  # A sourceDir given as a string rather than a path literal — the natural way
+  # to point at another flake's files, `inputs.dotfiles + "/files"` — carries a
+  # store-path string context. Every destination derived from it did too, and
+  # the collision check's groupBy turns destinations into attribute names, which
+  # may not carry context, so evaluation failed. A dependency flake's outPath is
+  # such a string; `builtins.path` returns one too, and is the way to get one
+  # here — a path literal, or this flake's own `self`, is a path value without
+  # context and did not reproduce it.
+  stringSource = evalND (
+    base
+    // {
+      sources.shared = shared // {
+        sourceDir = builtins.path {
+          path = ./fixtures/shared;
+          name = "shared";
+        };
+      };
+    }
+  );
+
   # The same destination from two sources fails evaluation and names both.
   collision = evalND (
     base
@@ -315,6 +335,8 @@ in
   badSourceFailures = pkgs.writeText "nd-bad-source-failures" (failingMessages badSource);
   wrapMultiSwitch = wrapperOf multi "nd-switch";
   wrapMultiSave = wrapperOf multi "nd-save";
+  activationStringSource = activationOf stringSource;
+  stringSourceFailures = pkgs.writeText "nd-string-source-failures" (failingMessages stringSource);
 
   homeDirectory = homeDir;
   flakePath = base.flakePath;

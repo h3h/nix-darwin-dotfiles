@@ -159,7 +159,16 @@ let
     let
       root = s.sourceDir + "/${g.source}";
       eres = map globLib.globToERE g.patterns;
-      relOf = p: lib.removePrefix "${toString root}/" (toString p);
+      # A sourceDir given as a string — `inputs.dotfiles + "/files"`, the
+      # natural way to name another flake's files — carries a store-path
+      # context, and removePrefix keeps it, so every destination and repo path
+      # derived here carried it too. The collision check groups records by
+      # destination, which makes destinations attribute names, and those may
+      # not carry context: evaluation failed with "not allowed to refer to a
+      # store path". The relative part names no store object, so its context is
+      # dropped; `src` keeps the real path, which is what has to stay in the
+      # closure.
+      relOf = p: builtins.unsafeDiscardStringContext (lib.removePrefix "${toString root}/" (toString p));
     in
     if !globSourceOk s g then
       [ ]

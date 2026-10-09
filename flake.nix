@@ -100,6 +100,8 @@
               export ND_BAD_SOURCE_FAILURES="${m.badSourceFailures}"
               export ND_WRAP_MULTI_SWITCH="${m.wrapMultiSwitch}"
               export ND_WRAP_MULTI_SAVE="${m.wrapMultiSave}"
+              export ND_ACTIVATION_STRING_SOURCE="${m.activationStringSource}"
+              export ND_STRING_SOURCE_FAILURES="${m.stringSourceFailures}"
               export ND_STATUS_BIN="${self.packages.${system}.nd-status}/bin/nd-status"
               export ND_HOME_DIRECTORY="${m.homeDirectory}"
               export ND_FLAKE_PATH="${m.flakePath}"
