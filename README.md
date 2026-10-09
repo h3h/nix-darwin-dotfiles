@@ -374,9 +374,11 @@ exported `ND_*` still wins.
 ```console
 $ nix flake check          # runs the suite in a sandbox
 $ bash tests/run.sh        # or directly
+$ nix flake check ./tests/hm
+$ bash tests/integration.sh
 ```
 
-362 cases covering argument parsing; drift, missing, new and unreadable
+367 cases covering argument parsing; drift, missing, new and unreadable
 classification; the gate, its two overrides and what they say they will discard;
 flag ordering; copy-back; commit scoping and contents; the branch guard and
 detached HEAD; the unplaced-repo-edit and staged-content refusals and `--force`;
@@ -396,13 +398,29 @@ directory.
   the same regex. The two engines are not the same dialect — `\]` is fine to one
   and fatal to the other — so "one translator, two anchoring mechanisms" has to
   be tested rather than asserted.
-- `tests/module.nix` and `tests/module.sh`, 90 cases evaluating the real
+- `tests/module.nix` and `tests/module.sh`, 93 cases evaluating the real
   home-manager module against a stubbed option surface: the exact manifest text
   it generates, which files each pattern enumerates, that a dry-run activation
   writes nothing at all, that the option wrappers export what they should and
   still let an explicit `ND_*` win, and a round trip feeding the generated
   manifest to the real `nd-status`. That last one is the only place the code
   that writes the manifest and the code that reads it meet.
+
+Two more run outside `nix flake check`, because neither fits inside it:
+
+- `tests/hm` is a separate flake that builds a real home-manager activation
+  package with the module enabled, extra source included, against home-manager's
+  current stable release and its master branch. The stubbed option surface above
+  proves the module's logic; this proves the options it writes still exist
+  upstream. It is a separate flake so that consumers' lock files do not carry
+  two home-manager trees they never use.
+- `tests/integration.sh` runs the real `nd-switch --build` against the real nix
+  and a scratch consumer flake, proving that an extra source is built from its
+  checkout, uncommitted edits included, and that the consumer's `flake.lock` is
+  left alone. A build sandbox has no nix to run, so this cannot be a check.
+
+CI (`.github/workflows/check.yml`) runs all of them on macOS and Linux for every
+pull request and every push to `main`.
 
 ## Limitations
 
