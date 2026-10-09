@@ -330,7 +330,10 @@ writeShellApplication {
       fi
       if [ -f "$ovr_checkout/flake.nix" ] \
         && git -C "$ovr_checkout" rev-parse --is-inside-work-tree > /dev/null 2>&1; then
-        override_args+=(--override-input "$ovr_input" "git+file://$ovr_checkout")
+        # The physical path, because nix refuses a git+file URL that runs
+        # through a symlink — and on macOS /var and /tmp are both symlinks.
+        ovr_physical="$(cd "$ovr_checkout" && pwd -P)"
+        override_args+=(--override-input "$ovr_input" "git+file://$ovr_physical")
         ovr_head="$(git -C "$ovr_checkout" rev-parse HEAD 2> /dev/null || true)"
         echo "nd-switch: $ovr_input from $ovr_checkout (HEAD ''${ovr_head:0:7})"
         ovr_locked="$(locked_rev "$ovr_input")"

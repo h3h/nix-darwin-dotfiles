@@ -1929,6 +1929,17 @@ out=$(run_switch_stubbed "$d" "$ovr" --build)
 check "--build overrides too" "--override-input dotfiles git+file://$d/shared" "$out"
 check_not "--build does not switch" "darwin-rebuild" "$out"
 
+# nix refuses a git+file URL whose path runs through a symlink ("path '//var'
+# is a symlink" — and /var and /tmp are both symlinks on macOS), so the
+# checkout reaches nix by its physical path. tests/integration.sh found this
+# against the real nix; this pins it without one.
+ln -s "$d/shared" "$d/shared-link"
+real_shared="$(cd "$d/shared" && pwd -P)"
+out=$(run_switch_stubbed "$d" "$(printf 'dotfiles\t%s' "$d/shared-link")")
+check "a symlinked checkout reaches nix by its physical path" \
+  "--override-input dotfiles git+file://$real_shared" "$out"
+rm "$d/shared-link"
+
 # No checkout: fall back to the lock, say so, pass no override.
 out=$(run_switch_stubbed "$d" "$(printf 'dotfiles\t%s' "$d/nowhere")")
 check "a missing checkout is named" "nd-switch: dotfiles: no checkout at $d/nowhere, building the locked revision" "$out"
