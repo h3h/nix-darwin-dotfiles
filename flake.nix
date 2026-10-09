@@ -90,6 +90,18 @@
               export ND_WRAP_STATUS="${m.wrapStatus}"
               export ND_WRAP_NOBRANCH_SAVE="${m.wrapNoBranchSave}"
               export ND_WRAP_NOHOST_SWITCH="${m.wrapNoHostSwitch}"
+              export ND_ACTIVATION_MULTI="${m.activationMulti}"
+              export ND_EXPECTED_MULTI_MANIFEST="${m.expectedMultiManifest}"
+              export ND_MULTI_ASSERTION_FAILURES="${m.multiAssertionFailures}"
+              export ND_COLLISION_FAILURES="${m.collisionFailures}"
+              export ND_ROOT_COLLISION_FAILURES="${m.rootCollisionFailures}"
+              export ND_OPTOUT_FAILURES="${m.optOutFailures}"
+              export ND_ACTIVATION_OPTOUT="${m.activationOptOut}"
+              export ND_BAD_SOURCE_FAILURES="${m.badSourceFailures}"
+              export ND_WRAP_MULTI_SWITCH="${m.wrapMultiSwitch}"
+              export ND_WRAP_MULTI_SAVE="${m.wrapMultiSave}"
+              export ND_ACTIVATION_STRING_SOURCE="${m.activationStringSource}"
+              export ND_STRING_SOURCE_FAILURES="${m.stringSourceFailures}"
               export ND_STATUS_BIN="${self.packages.${system}.nd-status}/bin/nd-status"
               export ND_HOME_DIRECTORY="${m.homeDirectory}"
               export ND_FLAKE_PATH="${m.flakePath}"
@@ -132,11 +144,16 @@
           packages = [
             pkgs.git
             pkgs.shellcheck
-            pkgs.nixfmt-rfc-style
+            pkgs.nixfmt
           ];
         };
       });
 
-      formatter = forAllSystems (pkgs: pkgs.nixfmt-rfc-style);
+      # nixfmt-tree, not nixfmt itself: bare nixfmt formats stdin when given no
+      # arguments, so a plain `nix fmt` blocked forever in a non-interactive
+      # shell, and nixfmt has deprecated taking a directory. nixfmt-tree is
+      # upstream's wrapper for exactly this — it formats every .nix file in the
+      # tree with the same nixfmt, and still accepts explicit paths.
+      formatter = forAllSystems (pkgs: pkgs.nixfmt-tree);
     };
 }
