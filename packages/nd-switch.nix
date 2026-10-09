@@ -304,9 +304,23 @@ writeShellApplication {
     #
     # git+file sees uncommitted edits to tracked files and not untracked ones:
     # the same visibility the default flake has, which `captured` relies on.
+    #
+    # A root input is recorded either as a node name or, when it follows another
+    # flake's input, as a path of input names to walk from the root — and each
+    # step of that walk can itself be a follows path. Treating every reference
+    # as a node name found nothing for a followed input, and an empty answer
+    # printed nothing at all, which reads exactly like "the lock is current".
     locked_rev() { # locked_rev <input>
-      jq -r --arg i "$1" '.nodes[.nodes.root.inputs[$i]].locked.rev // empty' \
-        "$flake/flake.lock" 2> /dev/null || true
+      # shellcheck disable=SC2016  # $n, $i and $ref are jq variables.
+      jq -r --arg i "$1" '
+        .nodes as $n
+        | def node($ref):
+            if ($ref | type) == "array"
+            then reduce $ref[] as $k ("root"; node($n[.].inputs[$k]))
+            else $ref
+            end;
+          $n[node($n.root.inputs[$i])].locked.rev // empty
+      ' "$flake/flake.lock" 2> /dev/null || true
     }
 
     override_args=()
@@ -320,7 +334,9 @@ writeShellApplication {
         ovr_head="$(git -C "$ovr_checkout" rev-parse HEAD 2> /dev/null || true)"
         echo "nd-switch: $ovr_input from $ovr_checkout (HEAD ''${ovr_head:0:7})"
         ovr_locked="$(locked_rev "$ovr_input")"
-        if [ -n "$ovr_head" ] && [ -n "$ovr_locked" ] && [ "$ovr_head" != "$ovr_locked" ]; then
+        if [ -z "$ovr_locked" ]; then
+          echo "nd-switch:   flake.lock has no locked revision for $ovr_input; cannot tell whether it is behind the checkout"
+        elif [ -n "$ovr_head" ] && [ "$ovr_head" != "$ovr_locked" ]; then
           echo "nd-switch:   lock is at ''${ovr_locked:0:7} — push it, then: nix flake update $ovr_input"
         fi
       else

@@ -1894,6 +1894,35 @@ check "a lagging lock is reported" \
 sed -i.bak "s/0000000000000000000000000000000000000000/$head_shared/" "$d/repo/flake.lock"
 out=$(run_switch_stubbed "$d" "$ovr")
 check_not "a current lock is not reported" "lock is at" "$out"
+check_not "a current lock is not called unreadable" "no locked revision" "$out"
+
+# An input that follows another flake's input is recorded in flake.lock as a
+# path of input names rather than a node name. Looking it up as a node name
+# found nothing, and nothing was printed, so a lock that lagged went
+# unreported. The path is resolved from the root, one input at a time.
+cat > "$d/repo/flake.lock" << EOF
+{"nodes":{"root":{"inputs":{"omc":"omc","dotfiles":["omc","dotfiles"]}},
+ "omc":{"inputs":{"dotfiles":"dotfiles_2"},"locked":{"rev":"1111111111111111111111111111111111111111"}},
+ "dotfiles_2":{"locked":{"rev":"0000000000000000000000000000000000000000"}}},
+ "root":"root","version":7}
+EOF
+out=$(run_switch_stubbed "$d" "$ovr")
+check "a lagging lock reached through follows is reported" \
+  "lock is at 0000000 — push it, then: nix flake update dotfiles" "$out"
+
+# A lock that has no revision for the input — no flake.lock at all, an input
+# missing from it, or a `path:` input, which locks no rev — cannot be compared.
+# Saying so beats saying nothing, which reads as "the lock is current".
+rm "$d/repo/flake.lock"
+out=$(run_switch_stubbed "$d" "$ovr")
+check "a missing lock revision is named" \
+  "nd-switch:   flake.lock has no locked revision for dotfiles; cannot tell whether it is behind the checkout" "$out"
+check "a missing lock revision still overrides" "--override-input dotfiles git+file://$d/shared" "$out"
+cat > "$d/repo/flake.lock" << EOF
+{"nodes":{"root":{"inputs":{"dotfiles":"dotfiles"}},
+ "dotfiles":{"locked":{"rev":"$head_shared"}}},
+ "root":"root","version":7}
+EOF
 
 # --build passes the override as well, and stops before sudo.
 out=$(run_switch_stubbed "$d" "$ovr" --build)
