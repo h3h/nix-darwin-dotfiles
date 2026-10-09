@@ -142,11 +142,16 @@
           packages = [
             pkgs.git
             pkgs.shellcheck
-            pkgs.nixfmt-rfc-style
+            pkgs.nixfmt
           ];
         };
       });
 
-      formatter = forAllSystems (pkgs: pkgs.nixfmt-rfc-style);
+      # nixfmt-tree, not nixfmt itself: bare nixfmt formats stdin when given no
+      # arguments, so a plain `nix fmt` blocked forever in a non-interactive
+      # shell, and nixfmt has deprecated taking a directory. nixfmt-tree is
+      # upstream's wrapper for exactly this — it formats every .nix file in the
+      # tree with the same nixfmt, and still accepts explicit paths.
+      formatter = forAllSystems (pkgs: pkgs.nixfmt-tree);
     };
 }
