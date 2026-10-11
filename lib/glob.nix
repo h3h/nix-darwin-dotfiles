@@ -43,9 +43,21 @@ let
   #     error: invalid regular expression '\]'
   #
   # `[` is escaped, so no bracket expression can ever open, so every `]` in the
-  # output is unambiguously literal to both engines. `}` stays escaped: unlike
-  # `]`, POSIX leaves a stray `}` undefined rather than ordinary, and both
-  # engines accept `\}`.
+  # output is unambiguously literal to both engines.
+  #
+  # `}` is absent too, and is written as the bracket expression `[}]` instead
+  # (see closeBrace). POSIX leaves both `}` and `\}` undefined, and the
+  # engines behind `builtins.match` split on them: macOS's libc++ accepts
+  # `\}`, and Linux's libstdc++ rejects it outright —
+  #
+  #     $ nix-instantiate --eval --expr 'builtins.match "a\\}" "a}"'   # Linux
+  #     error: invalid regular expression 'a\}'
+  #
+  # — so every pattern containing `}` failed evaluation on Linux while passing
+  # on a Mac, where the only checks ran. `[}]` is a literal `}` to libc++,
+  # libstdc++ and grep alike. It is the one bracket expression this
+  # translator emits, and it is emitted whole, so the reasoning above about a
+  # stray `]` still holds for every other `]` in the output.
   #
   # `-` is likewise absent and must stay absent: `\-` throws in `builtins.match`
   # for the same reason as `\]`.
@@ -57,11 +69,12 @@ let
     ")"
     "["
     "{"
-    "}"
     "^"
     "$"
     "|"
   ];
+
+  closeBrace = "[}]";
 in
 rec {
   # Supported syntax, and nothing else:
@@ -90,7 +103,7 @@ rec {
       (lib.replaceStrings [ "**/" ] [ gs ])
       (lib.replaceStrings [ "/**" ] [ gsTail ])
       collapseStars
-      (lib.replaceStrings metachars (map (c: "\\" + c) metachars))
+      (lib.replaceStrings (metachars ++ [ "}" ]) (map (c: "\\" + c) metachars ++ [ closeBrace ]))
       (lib.replaceStrings [ "*" "?" ] [ "[^/]*" "[^/]" ])
       (lib.replaceStrings [ gs gsTail ] [ "(.*/)?" "/.*" ])
     ];

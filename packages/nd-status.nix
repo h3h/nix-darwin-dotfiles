@@ -11,8 +11,10 @@
 # in nd-switch, twice in nd-save, and again in the zsh startup notice, and
 # adding a category meant editing all four consistently.
 #
-# Output is <kind> TAB <dest relative to $HOME> TAB <path relative to the flake
-# repo root>, passed through `sort -u`. Exit status is 0 whenever the manifest
+# Output is <kind> TAB <dest relative to $HOME> TAB <repo path>, where the repo
+# path is relative to the default flake's root, or absolute for a file that
+# belongs to a programs.nd.sources entry. It is printed exactly as the manifest
+# has it. Passed through `sort -u`. Exit status is 0 whenever the manifest
 # was read, findings or not: classifying is this program's job, and deciding
 # what a finding means belongs to its callers.
 #
@@ -84,6 +86,16 @@ writeShellApplication {
       printf '%s' "$s"
     }
 
+    # Field 3 is relative to the default flake for the default source and
+    # absolute for every programs.nd.sources entry, which is how a second repo
+    # is found with no other configuration.
+    repo_path() { # repo_path <field 3>
+      case "$1" in
+        /*) printf '%s' "$1" ;;
+        *) printf '%s/%s' "$flake" "$1" ;;
+      esac
+    }
+
     # `install` only ever places 0644 or 0755, so the executable bit is the
     # only mode either side of a managed file can vary on; a full mode
     # comparison would treat a umask the user set on the live file by hand
@@ -118,14 +130,20 @@ writeShellApplication {
     # leaves the question undecided, and E14's rule is that "I cannot tell
     # whether this is safe to overwrite" is the reason not to, not a reason to.
     kind_for() { # kind_for <fallback> <dest> <repo_rel>
-      local fallback="$1" dest="$2" repo_rel="$3" cmp_st=0
+      local fallback="$1" dest="$2" repo_rel="$3" cmp_st=0 abs
 
-      if [ -z "$repo_rel" ] || [ ! -f "$flake/$repo_rel" ]; then
+      if [ -z "$repo_rel" ]; then
+        printf '%s' "$fallback"
+        return 0
+      fi
+      abs="$(repo_path "$repo_rel")"
+
+      if [ ! -f "$abs" ]; then
         printf '%s' "$fallback"
         return 0
       fi
 
-      cmp -s "$flake/$repo_rel" "$HOME/$dest" || cmp_st=$?
+      cmp -s "$abs" "$HOME/$dest" || cmp_st=$?
       if [ "$cmp_st" -ne 0 ]; then
         printf '%s' "$fallback"
         return 0
@@ -134,7 +152,7 @@ writeShellApplication {
       # Byte-identical is not enough: a repo copy committed before an
       # executable bit was saved still matches on content, but the next
       # switch would place it 0644 and silently discard the bit again.
-      if ! modes_match "$flake/$repo_rel" "$HOME/$dest"; then
+      if ! modes_match "$abs" "$HOME/$dest"; then
         printf '%s' "$fallback"
         return 0
       fi
@@ -145,12 +163,43 @@ writeShellApplication {
       # named files/c[1].toml was reported captured this way, because
       # files/c1.toml happened to be tracked and the pathspec matched that
       # instead of asking whether files/c[1].toml itself was known to git.
-      if ! git --literal-pathspecs -C "$flake" ls-files --error-unmatch -- "$repo_rel" > /dev/null 2>&1; then
+      if ! git --literal-pathspecs -C "$(dirname "$abs")" ls-files --error-unmatch -- "$(basename "$abs")" > /dev/null 2>&1; then
         printf '%s' "$fallback"
         return 0
       fi
 
       printf 'captured'
+    }
+
+    # Every glob root in the manifest, normalised, from every source. A path
+    # under a deeper root belongs to that root alone: otherwise a file that
+    # appears inside a nested root matches both scans and is reported twice,
+    # with two different repo paths, and nd-save would not know which repo it
+    # belongs to.
+    glob_roots="$(while IFS="$tab" read -r _src gdest _repo gkind _ere || [ -n "''${gdest:-}" ]; do
+      if [ "''${gkind:-}" = glob ]; then
+        strip_trailing_slashes "$gdest"
+        printf '\n'
+      fi
+    done < "$manifest" | sort -u)"
+
+    under_deeper_root() { # under_deeper_root <own root> <dest>
+      local own="$1" dest="$2" r
+      while IFS= read -r r; do
+        if [ -z "$r" ] || [ "$r" = "$own" ]; then
+          continue
+        fi
+        if [ -n "$own" ]; then
+          case "$r" in
+            "$own"/*) ;;
+            *) continue ;;
+          esac
+        fi
+        case "$dest" in
+          "$r"/*) return 0 ;;
+        esac
+      done <<< "$glob_roots"
+      return 1
     }
 
     scan_glob() {
@@ -196,6 +245,9 @@ writeShellApplication {
         fi
         if [ "''${rel%%$'\t'*}" != "$rel" ]; then
           echo "nd-status: skipping path with a tab under $root" >&2
+          continue
+        fi
+        if under_deeper_root "$root" "$dest_prefix$rel"; then
           continue
         fi
         # `--` on both greps. globToERE deliberately does not escape `-` and

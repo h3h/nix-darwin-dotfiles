@@ -3,6 +3,7 @@
   coreutils,
   gnused,
   gnugrep,
+  jq,
   nd-status,
 }:
 
@@ -17,11 +18,23 @@ writeShellApplication {
     coreutils
     gnused
     gnugrep
+    jq
     nd-status
   ];
   text = ''
     flake="''${ND_FLAKE:-$HOME/.config/nix-darwin}"
-    host="''${ND_HOST:-$(/bin/hostname -s)}"
+    # /bin/hostname is macOS's, and its -s is what the nd-host-option design
+    # chose. A Linux build sandbox has no /bin/hostname at all, so the bare call
+    # failed before argument parsing and took even --help down with it.
+    # `uname -n` (coreutils, so always on PATH here) with the domain cut off is
+    # the same short name.
+    if [ -x /bin/hostname ]; then
+      default_host="$(/bin/hostname -s)"
+    else
+      default_host="$(uname -n)"
+      default_host="''${default_host%%.*}"
+    fi
+    host="''${ND_HOST:-$default_host}"
     manifest="''${ND_MANIFEST:-$HOME/.local/state/nd/manifest}"
     build_only=""
     allow_dirty=""
@@ -29,9 +42,23 @@ writeShellApplication {
     steps=1
     tab="$(printf '\t')"
 
+    # Both of these read the system profile, which a build sandbox (and a
+    # machine whose system profile lives elsewhere) does not have. Under
+    # errexit and pipefail a missing directory killed the script in the middle
+    # of a switch that had already built, so an absent profile now reads as "no
+    # generations": the printed rollback hint is skipped and a numbered
+    # rollback says there is nothing to go back to.
     gens() {
+      if [ ! -d /nix/var/nix/profiles ]; then
+        return 0
+      fi
       find /nix/var/nix/profiles -maxdepth 1 -name 'system-*-link' \
         | sed 's|.*/system-\([0-9]*\)-link|\1|' | sort -n
+    }
+
+    current_gen() {
+      readlink /nix/var/nix/profiles/system 2> /dev/null \
+        | sed 's|system-\([0-9]*\)-link|\1|' || true
     }
 
     # Parsed as a loop so flags work in any order.
@@ -70,6 +97,7 @@ writeShellApplication {
           echo "  --allow-dirty   switch anyway, discarding the contents of drifted"
           echo "                  files; they are named before anything is built"
           echo "  --rollback [N]  go back N generations (default 1)"
+          echo "  ND_OVERRIDES  extra sources to build from local checkouts (set by the module)"
           exit 0
           ;;
         --)
@@ -218,7 +246,7 @@ writeShellApplication {
       # --allow-dirty as the override, is E17 and is the maintainer's call.
       report_status "--rollback"
 
-      current="$(readlink /nix/var/nix/profiles/system | sed 's|system-\([0-9]*\)-link|\1|')"
+      current="$(current_gen)"
 
       if [ "$steps" -eq 1 ]; then
         echo "nd-switch: rolling back one generation from $current"
@@ -266,8 +294,61 @@ writeShellApplication {
       exit 1
     fi
 
+    # Each programs.nd.sources entry is a flake input whose files nd-save
+    # captures into a local checkout. Building the locked revision instead would
+    # make `captured` a lie: the capture is in the checkout, the lock does not
+    # have it, and the switch would overwrite the live file with older content.
+    # So each usable checkout overrides its input, and the lock is allowed to
+    # lag — which is said out loud, because a lagging lock is how a change ends
+    # up working on this machine and nowhere else.
+    #
+    # git+file sees uncommitted edits to tracked files and not untracked ones:
+    # the same visibility the default flake has, which `captured` relies on.
+    #
+    # A root input is recorded either as a node name or, when it follows another
+    # flake's input, as a path of input names to walk from the root — and each
+    # step of that walk can itself be a follows path. Treating every reference
+    # as a node name found nothing for a followed input, and an empty answer
+    # printed nothing at all, which reads exactly like "the lock is current".
+    locked_rev() { # locked_rev <input>
+      # shellcheck disable=SC2016  # $n, $i and $ref are jq variables.
+      jq -r --arg i "$1" '
+        .nodes as $n
+        | def node($ref):
+            if ($ref | type) == "array"
+            then reduce $ref[] as $k ("root"; node($n[.].inputs[$k]))
+            else $ref
+            end;
+          $n[node($n.root.inputs[$i])].locked.rev // empty
+      ' "$flake/flake.lock" 2> /dev/null || true
+    }
+
+    override_args=()
+    while IFS="$tab" read -r ovr_input ovr_checkout; do
+      if [ -z "''${ovr_input:-}" ]; then
+        continue
+      fi
+      if [ -f "$ovr_checkout/flake.nix" ] \
+        && git -C "$ovr_checkout" rev-parse --is-inside-work-tree > /dev/null 2>&1; then
+        # The physical path, because nix refuses a git+file URL that runs
+        # through a symlink — and on macOS /var and /tmp are both symlinks.
+        ovr_physical="$(cd "$ovr_checkout" && pwd -P)"
+        override_args+=(--override-input "$ovr_input" "git+file://$ovr_physical")
+        ovr_head="$(git -C "$ovr_checkout" rev-parse HEAD 2> /dev/null || true)"
+        echo "nd-switch: $ovr_input from $ovr_checkout (HEAD ''${ovr_head:0:7})"
+        ovr_locked="$(locked_rev "$ovr_input")"
+        if [ -z "$ovr_locked" ]; then
+          echo "nd-switch:   flake.lock has no locked revision for $ovr_input; cannot tell whether it is behind the checkout"
+        elif [ -n "$ovr_head" ] && [ "$ovr_head" != "$ovr_locked" ]; then
+          echo "nd-switch:   lock is at ''${ovr_locked:0:7} — push it, then: nix flake update $ovr_input"
+        fi
+      else
+        echo "nd-switch: $ovr_input: no checkout at $ovr_checkout, building the locked revision"
+      fi
+    done <<< "''${ND_OVERRIDES:-}"
+
     echo "nd-switch: building $host from $flake"
-    nix build --no-link "$flake#darwinConfigurations.$host.system"
+    nix build --no-link "$flake#darwinConfigurations.$host.system" "''${override_args[@]}"
 
     if [ -n "$build_only" ]; then
       echo "nd-switch: build only, not switching"
@@ -281,7 +362,7 @@ writeShellApplication {
       echo "nd-switch: roll back with  sudo /nix/var/nix/profiles/system-$gen-link/activate"
     fi
 
-    sudo darwin-rebuild switch --flake "$flake#$host" "$@"
+    sudo darwin-rebuild switch --flake "$flake#$host" "''${override_args[@]}" "$@"
 
     echo "nd-switch: done. Relaunch your terminal fully if PATH or packages changed."
   '';

@@ -46,19 +46,32 @@ no() {
 }
 
 check() { # check <name> <expected-substring> <actual>
-  if printf '%s' "$3" | grep -qF "$2"; then ok "$1"; else no "$1" "wanted '$2' in: $(printf '%s' "$3" | tr '\n' '|')"; fi
+  if printf '%s' "$3" | grep -qF -e "$2"; then ok "$1"; else no "$1" "wanted '$2' in: $(printf '%s' "$3" | tr '\n' '|')"; fi
 }
 
 check_not() {
-  if printf '%s' "$3" | grep -qF "$2"; then no "$1" "did not want '$2'"; else ok "$1"; fi
+  if printf '%s' "$3" | grep -qF -e "$2"; then no "$1" "did not want '$2'"; else ok "$1"; fi
 }
 
 check_empty() { # check_empty <name> <actual>
   if [ -z "$2" ]; then ok "$1"; else no "$1" "wanted empty, got: $2"; fi
 }
 
+check_eq() { # check_eq <name> <expected> <actual>
+  if [ "$2" = "$3" ]; then
+    ok "$1"
+  else
+    no "$1" "wanted: $(printf '%s' "$2" | tr '\n\t' '|>')
+       got:    $(printf '%s' "$3" | tr '\n\t' '|>')"
+  fi
+}
+
 check_status() { # check_status <name> <expected> <actual>
   if [ "$2" = "$3" ]; then ok "$1"; else no "$1" "wanted exit $2, got $3"; fi
+}
+
+check_absent() { # check_absent <name> <path>
+  if [ -e "$2" ] || [ -L "$2" ]; then no "$1" "wanted no file at $2"; else ok "$1"; fi
 }
 
 # A fixture is a $HOME with one managed file, a manifest, and a git repo acting
@@ -128,16 +141,69 @@ new_glob_fixture() {
 
 drift() { printf 'setting = 2\n' > "$1/home/.config/app/config.toml"; }
 
+# Two repos: the default flake ($d/repo) and an extra source checkout
+# ($d/shared). The shared source owns .posh.toml and the glob root
+# .claude/skills; the default source owns the deeper root .claude/skills/work.
+# Extra-source records carry absolute repo paths, as the module writes them.
+new_multi_fixture() {
+  local d
+  d="$(mktemp -d)"
+  mkdir -p "$d/home/.local/state/nd" "$d/home/.claude/skills/one" "$d/home/.claude/skills/work" \
+           "$d/repo/files/work" "$d/shared/files/skills/one" "$d/store"
+
+  printf 'version = 3\n' > "$d/store/posh.toml"
+  printf '# one\n' > "$d/store/one.md"
+  printf '# w\n' > "$d/store/w.md"
+  chmod 0444 "$d/store/posh.toml" "$d/store/one.md" "$d/store/w.md"
+
+  install -m 0644 "$d/store/posh.toml" "$d/home/.posh.toml"
+  install -m 0644 "$d/store/one.md"    "$d/home/.claude/skills/one/SKILL.md"
+  install -m 0644 "$d/store/w.md"      "$d/home/.claude/skills/work/W.md"
+  install -m 0644 "$d/store/posh.toml" "$d/shared/files/posh.toml"
+  install -m 0644 "$d/store/one.md"    "$d/shared/files/skills/one/SKILL.md"
+  install -m 0644 "$d/store/w.md"      "$d/repo/files/work/W.md"
+  printf '{}\n' > "$d/repo/flake.nix"
+  printf '{}\n' > "$d/shared/flake.nix"
+
+  {
+    printf '%s\t%s\t%s\n' "$d/store/w.md"      ".claude/skills/work/W.md"       "files/work/W.md"
+    printf '%s\t%s\t%s\n' "$d/store/posh.toml" ".posh.toml"                     "$d/shared/files/posh.toml"
+    printf '%s\t%s\t%s\n' "$d/store/one.md"    ".claude/skills/one/SKILL.md"    "$d/shared/files/skills/one/SKILL.md"
+    printf '%s\t%s\t%s\t%s\t%s\n' "-" ".claude/skills/work" "files/work" "glob" '[^/]*\.md'
+    printf '%s\t%s\t%s\t%s\t%s\n' "-" ".claude/skills" "$d/shared/files/skills" "glob" '[^/]*/[^/]*\.md'
+  } > "$d/home/.local/state/nd/manifest"
+
+  local r
+  for r in repo shared; do
+    git -C "$d/$r" init -q -b main
+    git -C "$d/$r" config user.email t@example.com
+    git -C "$d/$r" config user.name Test
+    git -C "$d/$r" add -A
+    git -C "$d/$r" commit -qm initial
+  done
+  printf '%s' "$d"
+}
+
 # nd-switch's rollback path ends in `sudo darwin-rebuild`, which the suite
 # neither can nor should run. A stub `sudo` that only echoes stands in; the real
 # one is never reached because nd-switch takes sudo from the caller's PATH.
 stub_bin="$(mktemp -d)"
 printf '#!/bin/sh\necho "stub sudo $*"\n' > "$stub_bin/sudo"
 chmod +x "$stub_bin/sudo"
+
+# The override cases need to see the arguments nd-switch hands to nix, and must
+# not build anything. A stub nix that echoes and succeeds stands in, on the same
+# PATH as the stub sudo, so the switch path runs to the end.
+printf '#!/bin/sh\necho "stub nix $*"\n' > "$stub_bin/nix"
+chmod +x "$stub_bin/nix"
 trap 'rm -rf "$stub_bin"' EXIT
 
 run_switch() { HOME="$1/home" ND_FLAKE="$1/repo" "$ND_SWITCH" "${@:2}" 2>&1; }
 run_rollback() { HOME="$1/home" ND_FLAKE="$1/repo" PATH="$stub_bin:$PATH" "$ND_SWITCH" "${@:2}" 2>&1; }
+run_switch_stubbed() { # run_switch_stubbed <fixture> <ND_OVERRIDES> [args...]
+  HOME="$1/home" ND_FLAKE="$1/repo" ND_HOST=example ND_OVERRIDES="$2" \
+    PATH="$stub_bin:$PATH" "$ND_SWITCH" "${@:3}" 2>&1
+}
 run_save() { HOME="$1/home" ND_FLAKE="$1/repo" "$ND_SAVE" "${@:2}" 2>&1; }
 run_status() { HOME="$1/home" ND_FLAKE="$1/repo" "$ND_STATUS" "${@:2}" 2>&1; }
 
@@ -293,12 +359,19 @@ rm -rf "$d"
 
 # The bottom row of the precedence table: no ND_HOST and no option means the
 # short hostname, which is the behaviour every pre-existing configuration
-# depends on. Both sides call the same /bin/hostname -s in the same
-# environment, so this compares nd-switch's resolution against its own source
-# of truth rather than against a hardcoded name.
+# depends on. Both sides resolve it the same way in the same environment —
+# /bin/hostname -s where it exists, as on macOS, and the short `uname -n`
+# elsewhere — so this compares nd-switch's resolution against its own source of
+# truth rather than against a hardcoded name.
+if [ -x /bin/hostname ]; then
+  short_host="$(/bin/hostname -s)"
+else
+  short_host="$(uname -n)"
+  short_host="${short_host%%.*}"
+fi
 d=$(new_fixture)
 out=$(HOME="$d/home" ND_FLAKE="$d/repo" "$ND_SWITCH" --build 2>&1)
-check "no ND_HOST falls back to the short hostname" "building $(/bin/hostname -s) from" "$out"
+check "no ND_HOST falls back to the short hostname" "building $short_host from" "$out"
 rm -rf "$d"
 
 # Captured content does not block. The new generation builds this file from the
@@ -1758,6 +1831,199 @@ printf '%s\t%s\t%s\n' "$d/store-source-2" ".config/app/config.toml" "files/confi
   > "$d/home/.local/state/nd/manifest"
 out=$(run_status "$d")
 check_empty "after the switch nothing is reported at all" "$out"
+rm -rf "$d"
+
+echo "multiple sources: nd-status"
+d=$(new_multi_fixture)
+out=$(run_status "$d")
+check_empty "a clean two-source tree reports nothing" "$out"
+
+printf 'version = 4\n' > "$d/home/.posh.toml"
+out=$(run_status "$d")
+check "an extra source's drift is reported with its absolute repo path" \
+  "drifted	.posh.toml	$d/shared/files/posh.toml" "$out"
+
+# Captured is decided in the repo that holds the file, not in ND_FLAKE.
+printf 'version = 4\n' > "$d/shared/files/posh.toml"
+out=$(run_status "$d")
+check "an extra source's capture is decided in its own repo" \
+  "captured	.posh.toml	$d/shared/files/posh.toml" "$out"
+rm -rf "$d"
+
+# The deepest root owns its subtree: a new file under .claude/skills/work
+# matches both roots' patterns but is reported once, against the default repo.
+d=$(new_multi_fixture)
+printf '# n\n' > "$d/home/.claude/skills/work/N.md"
+out=$(run_status "$d")
+check "a new file under nested roots is reported against the deeper root" \
+  "new	.claude/skills/work/N.md	files/work/N.md" "$out"
+check_eq "and only once" "1" "$(printf '%s\n' "$out" | grep -c 'N.md')"
+check_not "and never against the shallower root" "$d/shared/files/skills/work/N.md" "$out"
+
+# A new file elsewhere under the shallower root still belongs to it.
+mkdir -p "$d/home/.claude/skills/two"
+printf '# t\n' > "$d/home/.claude/skills/two/SKILL.md"
+out=$(run_status "$d")
+check "a new file outside the deeper root belongs to the shallower one" \
+  "new	.claude/skills/two/SKILL.md	$d/shared/files/skills/two/SKILL.md" "$out"
+rm -rf "$d"
+
+echo "multiple sources: nd-switch"
+d=$(new_multi_fixture)
+head_shared="$(git -C "$d/shared" rev-parse HEAD)"
+ovr="$(printf 'dotfiles\t%s' "$d/shared")"
+
+# A lock whose node for the input is at a different revision than the checkout.
+cat > "$d/repo/flake.lock" << EOF
+{"nodes":{"root":{"inputs":{"dotfiles":"dotfiles"}},
+ "dotfiles":{"locked":{"rev":"0000000000000000000000000000000000000000"}}},
+ "root":"root","version":7}
+EOF
+
+out=$(run_switch_stubbed "$d" "$ovr")
+check "the build overrides the input with the checkout" \
+  "stub nix build --no-link $d/repo#darwinConfigurations.example.system --override-input dotfiles git+file://$d/shared" "$out"
+check "the switch overrides it too" \
+  "darwin-rebuild switch --flake $d/repo#example --override-input dotfiles git+file://$d/shared" "$out"
+check "the checkout and its HEAD are named" \
+  "nd-switch: dotfiles from $d/shared (HEAD ${head_shared:0:7})" "$out"
+check "a lagging lock is reported" \
+  "lock is at 0000000 — push it, then: nix flake update dotfiles" "$out"
+
+# A lock that matches the checkout says nothing about lag.
+sed -i.bak "s/0000000000000000000000000000000000000000/$head_shared/" "$d/repo/flake.lock"
+out=$(run_switch_stubbed "$d" "$ovr")
+check_not "a current lock is not reported" "lock is at" "$out"
+check_not "a current lock is not called unreadable" "no locked revision" "$out"
+
+# An input that follows another flake's input is recorded in flake.lock as a
+# path of input names rather than a node name. Looking it up as a node name
+# found nothing, and nothing was printed, so a lock that lagged went
+# unreported. The path is resolved from the root, one input at a time.
+cat > "$d/repo/flake.lock" << EOF
+{"nodes":{"root":{"inputs":{"omc":"omc","dotfiles":["omc","dotfiles"]}},
+ "omc":{"inputs":{"dotfiles":"dotfiles_2"},"locked":{"rev":"1111111111111111111111111111111111111111"}},
+ "dotfiles_2":{"locked":{"rev":"0000000000000000000000000000000000000000"}}},
+ "root":"root","version":7}
+EOF
+out=$(run_switch_stubbed "$d" "$ovr")
+check "a lagging lock reached through follows is reported" \
+  "lock is at 0000000 — push it, then: nix flake update dotfiles" "$out"
+
+# A lock that has no revision for the input — no flake.lock at all, an input
+# missing from it, or a `path:` input, which locks no rev — cannot be compared.
+# Saying so beats saying nothing, which reads as "the lock is current".
+rm "$d/repo/flake.lock"
+out=$(run_switch_stubbed "$d" "$ovr")
+check "a missing lock revision is named" \
+  "nd-switch:   flake.lock has no locked revision for dotfiles; cannot tell whether it is behind the checkout" "$out"
+check "a missing lock revision still overrides" "--override-input dotfiles git+file://$d/shared" "$out"
+cat > "$d/repo/flake.lock" << EOF
+{"nodes":{"root":{"inputs":{"dotfiles":"dotfiles"}},
+ "dotfiles":{"locked":{"rev":"$head_shared"}}},
+ "root":"root","version":7}
+EOF
+
+# --build passes the override as well, and stops before sudo.
+out=$(run_switch_stubbed "$d" "$ovr" --build)
+check "--build overrides too" "--override-input dotfiles git+file://$d/shared" "$out"
+check_not "--build does not switch" "darwin-rebuild" "$out"
+
+# nix refuses a git+file URL whose path runs through a symlink ("path '//var'
+# is a symlink" — and /var and /tmp are both symlinks on macOS), so the
+# checkout reaches nix by its physical path. tests/integration.sh found this
+# against the real nix; this pins it without one.
+ln -s "$d/shared" "$d/shared-link"
+real_shared="$(cd "$d/shared" && pwd -P)"
+out=$(run_switch_stubbed "$d" "$(printf 'dotfiles\t%s' "$d/shared-link")")
+check "a symlinked checkout reaches nix by its physical path" \
+  "--override-input dotfiles git+file://$real_shared" "$out"
+rm "$d/shared-link"
+
+# No checkout: fall back to the lock, say so, pass no override.
+out=$(run_switch_stubbed "$d" "$(printf 'dotfiles\t%s' "$d/nowhere")")
+check "a missing checkout is named" "nd-switch: dotfiles: no checkout at $d/nowhere, building the locked revision" "$out"
+check_not "a missing checkout passes no override" "--override-input" "$out"
+
+# Rollback never builds, so it never overrides.
+out=$(HOME="$d/home" ND_FLAKE="$d/repo" ND_OVERRIDES="$ovr" PATH="$stub_bin:$PATH" "$ND_SWITCH" --rollback 2>&1)
+check_not "a rollback passes no override" "--override-input" "$out"
+rm -rf "$d"
+
+echo "multiple sources: nd-save"
+
+run_save_multi() { # run_save_multi <fixture> [args...]
+  HOME="$1/home" ND_FLAKE="$1/repo" ND_OVERRIDES="$(printf 'dotfiles\t%s' "$1/shared")" \
+    "$ND_SAVE" "${@:2}" 2>&1
+}
+
+# Drift in both repos: two commits, one per repo, same subject.
+d=$(new_multi_fixture)
+printf 'version = 4\n' > "$d/home/.posh.toml"
+printf '# w2\n' > "$d/home/.claude/skills/work/W.md"
+out=$(run_save_multi "$d" -y); st=$?
+check_status "a two-repo save succeeds" 0 "$st"
+check_eq "the shared repo got the capture" "version = 4" "$(cat "$d/shared/files/posh.toml")"
+check_eq "the default repo got the capture" "# w2" "$(cat "$d/repo/files/work/W.md")"
+check_eq "the shared repo has one new commit" "2" "$(git -C "$d/shared" rev-list --count HEAD)"
+check_eq "the default repo has one new commit" "2" "$(git -C "$d/repo" rev-list --count HEAD)"
+check_eq "both commits share a subject" \
+  "$(git -C "$d/repo" log -1 --format=%s)" "$(git -C "$d/shared" log -1 --format=%s)"
+check "the push reminder names the input" "nix flake update dotfiles" "$out"
+check_eq "the shared commit touches only the capture" "files/posh.toml" \
+  "$(git -C "$d/shared" show --name-only --format= HEAD)"
+rm -rf "$d"
+
+# A new file under the deeper root lands in the default repo.
+d=$(new_multi_fixture)
+printf '# n\n' > "$d/home/.claude/skills/work/N.md"
+out=$(run_save_multi "$d" -y); st=$?
+check_status "a nested-root capture succeeds" 0 "$st"
+check_eq "it lands in the deeper root's repo" "# n" "$(cat "$d/repo/files/work/N.md")"
+check_absent "and not in the shallower root's repo" "$d/shared/files/skills/work/N.md"
+rm -rf "$d"
+
+# A blocker in one repo aborts both, with neither touched.
+d=$(new_multi_fixture)
+printf 'version = 4\n' > "$d/home/.posh.toml"
+printf '# w2\n' > "$d/home/.claude/skills/work/W.md"
+printf 'version = 9\n' > "$d/shared/files/posh.toml"   # an edit never placed
+out=$(run_save_multi "$d" -y); st=$?
+check_status "a blocker in one repo fails the run" 1 "$st"
+check "the blocker is named" "repo copy differs from what was placed" "$out"
+check_eq "the default repo is untouched" "# w" "$(cat "$d/repo/files/work/W.md")"
+check_eq "the default repo has no new commit" "1" "$(git -C "$d/repo" rev-list --count HEAD)"
+rm -rf "$d"
+
+# Detached HEAD in the extra repo is refused before any copy.
+d=$(new_multi_fixture)
+printf 'version = 4\n' > "$d/home/.posh.toml"
+git -C "$d/shared" checkout -q --detach
+out=$(run_save_multi "$d" -y); st=$?
+check_status "a detached extra repo is refused" 1 "$st"
+check "the detached repo is named" "HEAD is detached in $d/shared" "$out"
+check_eq "nothing was copied" "version = 3" "$(cat "$d/shared/files/posh.toml")"
+rm -rf "$d"
+
+# A repo path no source claims fails closed.
+d=$(new_multi_fixture)
+printf 'version = 4\n' > "$d/home/.posh.toml"
+out=$(HOME="$d/home" ND_FLAKE="$d/repo" "$ND_SAVE" -y 2>&1); st=$?
+check_status "an unknown repo fails" 1 "$st"
+check "it says why" "outside every known repo" "$out"
+rm -rf "$d"
+
+# The second repo's commit failing after the first committed is reported.
+d=$(new_multi_fixture)
+printf 'version = 4\n' > "$d/home/.posh.toml"
+printf '# w2\n' > "$d/home/.claude/skills/work/W.md"
+mkdir -p "$d/shared/.git/hooks"
+printf '#!/bin/sh\nexit 1\n' > "$d/shared/.git/hooks/pre-commit"
+chmod +x "$d/shared/.git/hooks/pre-commit"
+out=$(run_save_multi "$d" -y); st=$?
+check_status "a partial save fails" 1 "$st"
+check "the earlier commit is named" "committed in $d/repo" "$out"
+check_eq "the shared index is put back" "" "$(git -C "$d/shared" diff --cached --name-only)"
 rm -rf "$d"
 
 echo

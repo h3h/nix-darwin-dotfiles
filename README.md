@@ -159,6 +159,81 @@ Only what a pattern names is ever captured. This is an allowlist deliberately: a
 managed *directory* would need an ignore list maintained against an application
 you do not control.
 
+## Multiple sources
+
+The default flake is one source. `programs.nd.sources.<name>` adds more, each
+built from its own local checkout, so a shared repo and a personal repo can both
+place and capture files.
+
+A shared module declares what it manages, with no knowledge of where anyone
+checks it out:
+
+```nix
+# shared repo: homeManagerModules.default
+{ inputs, ... }:
+{
+  programs.nd.sources.dotfiles = {
+    sourceDir = ./files;
+    repoSubdir = "alice/files";
+    files.".posh.toml" = "posh.toml";
+    globs.".config/kit" = {
+      source = "kit";
+      patterns = [ "*.md" ];
+    };
+  };
+}
+```
+
+The consumer says which flake input it is and where the checkout lives:
+
+```nix
+# consumer
+{
+  programs.nd.sources.dotfiles = {
+    input = "dotfiles";                       # the flake input's name
+    checkout = "/Users/alice/Sites/dotfiles"; # absolute, no trailing slash
+  };
+}
+```
+
+`input` and `checkout` must both be set. Options in a source other than those
+two mean what they do for the default source, except that `expectedBranch` and
+`--branch` apply to the default repo only.
+
+- **Switching.** `nd-switch` builds each source from its checkout, passing
+  `--override-input <input> git+file://<checkout>` to both `nix build` and
+  `darwin-rebuild switch`, so a capture that is not pushed yet is still in the
+  build. It prints one line per source, and a second one when the checkout's
+  HEAD differs from the revision in `flake.lock`:
+
+  ```console
+  nd-switch: dotfiles from /Users/alice/Sites/dotfiles (HEAD abc1234)
+  nd-switch:   lock is at def5678 — push it, then: nix flake update dotfiles
+  ```
+
+  `flake.lock` is not rewritten. A checkout that is missing, or is not a git
+  work tree with a `flake.nix`, falls back to the locked revision with a
+  one-line notice. The wrapper comes from the running generation, so the first
+  switch after adding a source still builds from the lock; the override takes
+  effect from the next one.
+- **Ownership.** A destination or a glob root belongs to exactly one source.
+  Declaring it in two is an evaluation error naming both. Set it to `null` in
+  all but one to opt out.
+- **Nested roots.** If one source's glob root sits inside another's, a file is
+  attributed to the deepest root containing it and reported once, against that
+  root's repo.
+- **Capturing.** `nd-save` groups captures by repo and runs every check (staged
+  content, detached HEAD, unplaced edits, the credential scan) across all of
+  them before copying anything, so a blocker in any repo aborts the whole run
+  with every repo untouched. It then commits once per repo with the same
+  message. Commits are not undone: if one repo commits and a later one fails,
+  `nd-save` prints `nd-save: committed in <repo> (<sha>)` for each repo that
+  did, and exits non-zero. After committing in an extra source's repo it
+  reminds you to push and run `nix flake update <input>`.
+- **When the extra source is this repo.** nd's own code comes from the same
+  input, so it is built from the checkout too: an unpushed change to `nd-switch`
+  takes effect on the next switch.
+
 ## Usage
 
 ```console
@@ -299,9 +374,11 @@ exported `ND_*` still wins.
 ```console
 $ nix flake check          # runs the suite in a sandbox
 $ bash tests/run.sh        # or directly
+$ nix flake check ./tests/hm
+$ bash tests/integration.sh
 ```
 
-210 cases covering argument parsing; drift, missing, new and unreadable
+367 cases covering argument parsing; drift, missing, new and unreadable
 classification; the gate, its two overrides and what they say they will discard;
 flag ordering; copy-back; commit scoping and contents; the branch guard and
 detached HEAD; the unplaced-repo-edit and staged-content refusals and `--force`;
@@ -321,13 +398,29 @@ directory.
   the same regex. The two engines are not the same dialect — `\]` is fine to one
   and fatal to the other — so "one translator, two anchoring mechanisms" has to
   be tested rather than asserted.
-- `tests/module.nix` and `tests/module.sh`, 59 cases evaluating the real
+- `tests/module.nix` and `tests/module.sh`, 93 cases evaluating the real
   home-manager module against a stubbed option surface: the exact manifest text
   it generates, which files each pattern enumerates, that a dry-run activation
   writes nothing at all, that the option wrappers export what they should and
   still let an explicit `ND_*` win, and a round trip feeding the generated
   manifest to the real `nd-status`. That last one is the only place the code
   that writes the manifest and the code that reads it meet.
+
+Two more run outside `nix flake check`, because neither fits inside it:
+
+- `tests/hm` is a separate flake that builds a real home-manager activation
+  package with the module enabled, extra source included, against home-manager's
+  current stable release and its master branch. The stubbed option surface above
+  proves the module's logic; this proves the options it writes still exist
+  upstream. It is a separate flake so that consumers' lock files do not carry
+  two home-manager trees they never use.
+- `tests/integration.sh` runs the real `nd-switch --build` against the real nix
+  and a scratch consumer flake, proving that an extra source is built from its
+  checkout, uncommitted edits included, and that the consumer's `flake.lock` is
+  left alone. A build sandbox has no nix to run, so this cannot be a check.
+
+CI (`.github/workflows/check.yml`) runs all of them on macOS and Linux for every
+pull request and every push to `main`.
 
 ## Limitations
 

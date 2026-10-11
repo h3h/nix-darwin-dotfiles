@@ -61,41 +61,173 @@ let
       + " slash.";
   };
 
+  # Shared by programs.nd.globs and programs.nd.sources.<name>.globs, which
+  # mean the same thing relative to their own sourceDir.
+  globType = types.submodule {
+    options = {
+      source = mkOption {
+        type = types.str;
+        example = "nvim";
+        description = "Directory holding the matching files, relative to {option}`sourceDir`.";
+      };
+      patterns = mkOption {
+        type = types.listOf types.str;
+        example = [
+          "init.lua"
+          "lua/**/*.lua"
+          "lazy-lock.json"
+        ];
+        description = ''
+          Glob patterns, relative to both {option}`source` and the
+          destination root. Required: there is deliberately no default,
+          because a default of `[ "**" ]` would be whole-directory
+          tracking wearing a glob's clothes.
+
+          Supported syntax is `**/` (zero or more directories), a trailing
+          `/**` (everything below), `*` (within one component) and `?`.
+          Bracket expressions and brace expansion are not supported and
+          match literally.
+        '';
+      };
+    };
+  };
+
+  # null is the only way a consumer can remove an attribute that a shared
+  # module set: module merging has no "delete", and mkForce on the whole
+  # attrset would throw away every other entry the shared module declares.
+  # So a null entry means "not from this source", and it is dropped here,
+  # before any record, assertion or manifest line can see it.
+  dropNulls = lib.filterAttrs (_: v: v != null);
+
+  # The default source and every extra source, normalised to one shape so that
+  # each record builder below runs once per source rather than being written
+  # twice.
+  #
+  # repoBase is the only real difference. It stays relative for the default
+  # source, whose repo the tools already know as ND_FLAKE. It is absolute for an
+  # extra source, because that absolute path is the tools' only way to find a
+  # second repo: nothing else in the manifest or the environment names it, and
+  # nd-status and nd-save must work out which repo a record belongs to from the
+  # record alone.
+  #
+  # sourceDir and repoSubdir are inherited, not read, so a default source with
+  # no files and no globs still does not need either one set.
+  defaultSource = {
+    name = "default";
+    opt = "";
+    inherit (cfg) sourceDir;
+    repoBase = cfg.repoSubdir;
+    files = dropNulls cfg.files;
+    globs = dropNulls cfg.globs;
+  };
+
+  extraSources = lib.mapAttrsToList (name: s: {
+    inherit name;
+    opt = "sources.${name}.";
+    inherit (s)
+      sourceDir
+      input
+      checkout
+      repoSubdir
+      ;
+    repoBase = "${s.checkout}/${s.repoSubdir}";
+    files = dropNulls s.files;
+    globs = dropNulls s.globs;
+  }) cfg.sources;
+
+  allSources = [ defaultSource ] ++ extraSources;
+
+  # Whether a glob's source is a directory listFilesRecursive can walk. The
+  # assertion below reports a bad one by option name; the record builder skips
+  # it, so that evaluating the collision assertions, which need every record's
+  # destination, does not throw the unattributed listFilesRecursive error the
+  # assertion exists to replace.
+  globSourceOk =
+    s: g:
+    let
+      src = s.sourceDir + "/${g.source}";
+    in
+    builtins.pathExists src && builtins.readFileType src == "directory";
+
   # A glob entry contributes ordinary file records for everything that matches
   # in the repo right now, plus one glob record per pattern so nd-status can
   # recognise files the application creates later. Placement and drift detection
   # are therefore byte-for-byte the same code path as a declared file; globs add
   # discovery of files that do not exist yet, and nothing else.
   globFileRecords =
-    destRoot: g:
+    s: destRoot: g:
     let
-      root = cfg.sourceDir + "/${g.source}";
+      root = s.sourceDir + "/${g.source}";
       eres = map globLib.globToERE g.patterns;
-      relOf = p: lib.removePrefix "${toString root}/" (toString p);
+      # A sourceDir given as a string — `inputs.dotfiles + "/files"`, the
+      # natural way to name another flake's files — carries a store-path
+      # context, and removePrefix keeps it, so every destination and repo path
+      # derived here carried it too. The collision check groups records by
+      # destination, which makes destinations attribute names, and those may
+      # not carry context: evaluation failed with "not allowed to refer to a
+      # store path". The relative part names no store object, so its context is
+      # dropped; `src` keeps the real path, which is what has to stay in the
+      # closure.
+      relOf = p: builtins.unsafeDiscardStringContext (lib.removePrefix "${toString root}/" (toString p));
     in
-    map (p: {
-      dest = "${destRoot}/${relOf p}";
-      src = p;
-      repoRel = "${cfg.repoSubdir}/${g.source}/${relOf p}";
-    }) (lib.filter (p: globLib.matchesAny eres (relOf p)) (lib.filesystem.listFilesRecursive root));
+    if !globSourceOk s g then
+      [ ]
+    else
+      map (p: {
+        dest = "${destRoot}/${relOf p}";
+        src = p;
+        repoRel = "${s.repoBase}/${g.source}/${relOf p}";
+        source = s.name;
+      }) (lib.filter (p: globLib.matchesAny eres (relOf p)) (lib.filesystem.listFilesRecursive root));
 
   globPatternRecords =
-    destRoot: g:
+    s: destRoot: g:
     map (p: {
       inherit destRoot;
-      repoRoot = "${cfg.repoSubdir}/${g.source}";
+      repoRoot = "${s.repoBase}/${g.source}";
       ere = globLib.globToERE p;
     }) g.patterns;
 
-  fileRecords =
+  filesOf =
+    s:
     lib.mapAttrsToList (dest: rel: {
       inherit dest;
-      src = cfg.sourceDir + "/${rel}";
-      repoRel = "${cfg.repoSubdir}/${rel}";
-    }) cfg.files
-    ++ lib.concatLists (lib.mapAttrsToList globFileRecords cfg.globs);
+      src = s.sourceDir + "/${rel}";
+      repoRel = "${s.repoBase}/${rel}";
+      source = s.name;
+    }) s.files;
 
-  patternRecords = lib.concatLists (lib.mapAttrsToList globPatternRecords cfg.globs);
+  globFilesOf = s: lib.concatLists (lib.mapAttrsToList (globFileRecords s) s.globs);
+
+  patternsOf = s: lib.concatLists (lib.mapAttrsToList (globPatternRecords s) s.globs);
+
+  # Default source first, then extra sources in attribute-name order; within
+  # each, declared files and then glob matches. Every glob record follows every
+  # file record.
+  fileRecords = lib.concatMap (s: filesOf s ++ globFilesOf s) allSources;
+
+  patternRecords = lib.concatMap patternsOf allSources;
+
+  # A destination, or a glob root, belongs to exactly one source. Letting one
+  # source win silently would make nd-save's target — which repo a drifted file
+  # is copied back into — depend on evaluation order, and would shadow a file
+  # without anyone having decided it should be. Setting the entry to null in all
+  # but one source is the documented way out.
+  claimsByDest = lib.groupBy (c: c.dest) (map (f: { inherit (f) dest source; }) fileRecords);
+  destCollisions = lib.filterAttrs (
+    _: cs: lib.length (lib.unique (map (c: c.source) cs)) > 1
+  ) claimsByDest;
+
+  rootClaims = lib.concatMap (
+    s:
+    map (root: {
+      inherit root;
+      source = s.name;
+    }) (lib.attrNames s.globs)
+  ) allSources;
+  rootCollisions = lib.filterAttrs (_: cs: lib.length cs > 1) (lib.groupBy (c: c.root) rootClaims);
+
+  sourceNames = cs: lib.concatStringsSep ", " (lib.unique (map (c: c.source) cs));
 
   # Field 4 is the record kind; absent means "file", so the three-field lines a
   # previous generation wrote keep parsing.
@@ -135,6 +267,14 @@ let
     ++ lib.optional (
       cfg.expectedBranch != ""
     ) "--set-default ND_EXPECTED_BRANCH ${lib.escapeShellArg cfg.expectedBranch}"
+    # One `input<TAB>checkout` line per extra source, so nd-switch can build
+    # each from its working tree and nd-save can find each repo. Absent rather
+    # than empty when there are none, as with ND_HOST above.
+    ++
+      lib.optional (extraSources != [ ])
+        "--set-default ND_OVERRIDES ${
+          lib.escapeShellArg (lib.concatMapStrings (s: "${s.input}\t${s.checkout}\n") extraSources)
+        }"
   );
 
   wrap =
@@ -187,7 +327,7 @@ in
     };
 
     files = mkOption {
-      type = types.attrsOf types.str;
+      type = types.attrsOf (types.nullOr types.str);
       default = { };
       example = lib.literalExpression ''
         {
@@ -203,40 +343,14 @@ in
         home path and the repo file the same inode, so `git checkout` and
         `git stash` rewrite live config underneath a running application, and a
         generation rollback cannot revert them. Copying decouples the two.
+
+        A `null` value opts the destination out, so that a consumer can drop
+        an entry a shared module declared and claim it from another source.
       '';
     };
 
     globs = mkOption {
-      type = types.attrsOf (
-        types.submodule {
-          options = {
-            source = mkOption {
-              type = types.str;
-              example = "nvim";
-              description = "Directory holding the matching files, relative to {option}`sourceDir`.";
-            };
-            patterns = mkOption {
-              type = types.listOf types.str;
-              example = [
-                "init.lua"
-                "lua/**/*.lua"
-                "lazy-lock.json"
-              ];
-              description = ''
-                Glob patterns, relative to both {option}`source` and the
-                destination root. Required: there is deliberately no default,
-                because a default of `[ "**" ]` would be whole-directory
-                tracking wearing a glob's clothes.
-
-                Supported syntax is `**/` (zero or more directories), a trailing
-                `/**` (everything below), `*` (within one component) and `?`.
-                Bracket expressions and brace expansion are not supported and
-                match literally.
-              '';
-            };
-          };
-        }
-      );
+      type = types.attrsOf (types.nullOr globType);
       default = { };
       example = lib.literalExpression ''
         {
@@ -259,7 +373,49 @@ in
         Only what a pattern names is ever captured. This is an allowlist on
         purpose: a managed *directory* would need an ignore list maintained
         against an application you do not control.
+
+        A `null` value opts the destination root out, as for {option}`files`.
       '';
+    };
+
+    sources = mkOption {
+      default = { };
+      description = ''
+        Additional repositories of managed files, each built from its local
+        checkout. See "Multiple sources" in the README.
+      '';
+      type = types.attrsOf (
+        types.submodule {
+          options = {
+            input = mkOption {
+              type = types.str;
+              description = "Flake input name, in the flake at {option}`flakePath`, that provides this source.";
+            };
+            checkout = mkOption {
+              type = types.str;
+              description = "Absolute path of a git working tree of that input. nd-switch builds from it and nd-save commits to it.";
+            };
+            sourceDir = mkOption {
+              type = types.path;
+              description = "Directory holding this source's managed files.";
+            };
+            repoSubdir = mkOption {
+              type = types.str;
+              description = "Path of sourceDir relative to checkout.";
+            };
+            files = mkOption {
+              type = types.attrsOf (types.nullOr types.str);
+              default = { };
+              description = "As {option}`programs.nd.files`, for this source.";
+            };
+            globs = mkOption {
+              type = types.attrsOf (types.nullOr globType);
+              default = { };
+              description = "As {option}`programs.nd.globs`, for this source.";
+            };
+          };
+        }
+      );
     };
 
     manifestPath = mkOption {
@@ -270,11 +426,14 @@ in
         with two kinds of record distinguished by field 4:
 
         - a *file* record has three fields — store source, destination relative
-          to `$HOME`, path relative to {option}`flakePath` — and no field 4, so
-          the three-field lines a previous generation wrote keep parsing;
+          to `$HOME`, repo path — and no field 4, so the three-field lines a
+          previous generation wrote keep parsing;
         - a *glob* record has five — a literal `-`, the destination root, the
           repo root, the word `glob`, and the ERE that {option}`globs`.patterns
           was translated to at evaluation time.
+
+        The repo path (field 3) is relative to {option}`flakePath` for the
+        default source and absolute for a {option}`sources` entry.
 
         Field 1 of a glob record is a placeholder because nothing reads it:
         every file a pattern matches already has its own file record carrying
@@ -346,42 +505,69 @@ in
   config = mkIf cfg.enable {
     assertions = [
       {
-        assertion = (cfg.files == { } && cfg.globs == { }) || cfg.repoSubdir != "";
+        assertion = (defaultSource.files == { } && defaultSource.globs == { }) || cfg.repoSubdir != "";
         message = "programs.nd.repoSubdir must be set when programs.nd.files or programs.nd.globs is non-empty.";
       }
     ]
-    ++ lib.mapAttrsToList (dest: _: relPathAssertion "files" dest) cfg.files
-    ++ lib.mapAttrsToList (dest: rel: relPathAssertion "files.\"${dest}\"" rel) cfg.files
-    ++ lib.mapAttrsToList (destRoot: _: relPathAssertion "globs" destRoot) cfg.globs
-    ++ lib.mapAttrsToList (
-      destRoot: g: relPathAssertion "globs.\"${destRoot}\".source" g.source
-    ) cfg.globs
-    # lib.filesystem.listFilesRecursive on a missing path throws an evaluation
-    # error whose message does not name the option that caused it. A path that
-    # exists but is not a directory gets past a bare pathExists and then throws
-    # the same class of unattributed error — `cannot read directory …: Not a
-    # directory` — so both cases are checked here rather than one.
-    ++ lib.mapAttrsToList (
-      destRoot: g:
-      let
-        src = cfg.sourceDir + "/${g.source}";
-      in
+    ++ lib.concatMap (
+      s:
+      lib.mapAttrsToList (dest: _: relPathAssertion "${s.opt}files" dest) s.files
+      ++ lib.mapAttrsToList (dest: rel: relPathAssertion "${s.opt}files.\"${dest}\"" rel) s.files
+      ++ lib.mapAttrsToList (destRoot: _: relPathAssertion "${s.opt}globs" destRoot) s.globs
+      ++ lib.mapAttrsToList (
+        destRoot: g: relPathAssertion "${s.opt}globs.\"${destRoot}\".source" g.source
+      ) s.globs
+      # lib.filesystem.listFilesRecursive on a missing path throws an evaluation
+      # error whose message does not name the option that caused it. A path that
+      # exists but is not a directory gets past a bare pathExists and then throws
+      # the same class of unattributed error — `cannot read directory …: Not a
+      # directory` — so both cases are checked here rather than one.
+      ++ lib.mapAttrsToList (
+        destRoot: g:
+        let
+          src = s.sourceDir + "/${g.source}";
+        in
+        {
+          assertion = globSourceOk s g;
+          message =
+            "programs.nd.${s.opt}globs.\"${destRoot}\".source = \"${g.source}\" must be a directory under "
+            + "programs.nd.${s.opt}sourceDir; it is "
+            + (if builtins.pathExists src then "a ${builtins.readFileType src}" else "missing")
+            + ".";
+        }
+      ) s.globs
+      # An empty match set is not an error — a pattern that matches nothing today
+      # but will match lazy-lock.json tomorrow is the expected state on a fresh
+      # machine. An empty pattern list is, because it can never match anything.
+      ++ lib.mapAttrsToList (destRoot: g: {
+        assertion = g.patterns != [ ];
+        message = "programs.nd.${s.opt}globs.\"${destRoot}\".patterns is empty, so the entry places and captures nothing.";
+      }) s.globs
+    ) allSources
+    ++ lib.mapAttrsToList (dest: cs: {
+      assertion = false;
+      message = "programs.nd: \"${dest}\" is declared by more than one source (${sourceNames cs}). Set it to null in all but one.";
+    }) destCollisions
+    ++ lib.mapAttrsToList (root: cs: {
+      assertion = false;
+      message = "programs.nd: glob root \"${root}\" is declared by more than one source (${sourceNames cs}). Set it to null in all but one.";
+    }) rootCollisions
+    # input and checkout are what only the consumer knows, and both end up in
+    # ND_OVERRIDES and in the manifest verbatim. An empty input is an
+    # --override-input with no name; a relative checkout is resolved against
+    # whatever directory a tool happens to run in, and a trailing slash puts
+    # `//` into every repo path in the manifest.
+    ++ lib.concatMap (s: [
       {
-        assertion = builtins.pathExists src && builtins.readFileType src == "directory";
-        message =
-          "programs.nd.globs.\"${destRoot}\".source = \"${g.source}\" must be a directory under "
-          + "programs.nd.sourceDir; it is "
-          + (if builtins.pathExists src then "a ${builtins.readFileType src}" else "missing")
-          + ".";
+        assertion = s.input != "";
+        message = "programs.nd.sources.${s.name}.input is empty.";
       }
-    ) cfg.globs
-    # An empty match set is not an error — a pattern that matches nothing today
-    # but will match lazy-lock.json tomorrow is the expected state on a fresh
-    # machine. An empty pattern list is, because it can never match anything.
-    ++ lib.mapAttrsToList (destRoot: g: {
-      assertion = g.patterns != [ ];
-      message = "programs.nd.globs.\"${destRoot}\".patterns is empty, so the entry places and captures nothing.";
-    }) cfg.globs;
+      {
+        assertion = lib.hasPrefix "/" s.checkout && !lib.hasSuffix "/" s.checkout;
+        message = "programs.nd.sources.${s.name}.checkout: \"${s.checkout}\" must be an absolute path with no trailing slash.";
+      }
+      (relPathAssertion "sources.${s.name}.repoSubdir" s.repoSubdir)
+    ]) extraSources;
 
     home.packages = mkIf cfg.installPackages [
       ndSwitch
